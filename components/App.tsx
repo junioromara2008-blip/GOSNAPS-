@@ -133,7 +133,9 @@ export default function App() {
     }
 
     if (data) {
-      setMembers(data);
+  setMembers(data);
+  setToast(`${data.length} member(s) found`);
+    }
     }
   }
 
