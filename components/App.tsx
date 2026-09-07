@@ -44,7 +44,10 @@ export default function App() {
             const exists = old.some(
               (m) => m.id === payload.new.id
             );
-            return exists ? old : [...old, payload.new];
+
+            return exists
+              ? old
+              : [...old, payload.new];
           });
         }
       )
@@ -55,7 +58,9 @@ export default function App() {
       .order("created_at", { ascending: true })
       .limit(100)
       .then(({ data }) => {
-        if (mounted && data) setMessages(data);
+        if (mounted && data) {
+          setMessages(data);
+        }
       });
 
     const presence = sb.channel("gosnaps-presence", {
@@ -69,20 +74,25 @@ export default function App() {
     presence
       .on("presence", { event: "sync" }, () => {
         setOnline(
-          Object.keys(presence.presenceState()).length
+          Object.keys(
+            presence.presenceState()
+          ).length
         );
       })
       .subscribe(async (status) => {
         if (status === "SUBSCRIBED") {
           await presence.track({
-            online_at: new Date().toISOString(),
+            online_at:
+              new Date().toISOString(),
           });
         }
       });
 
     return () => {
       mounted = false;
+
       auth.data.subscription.unsubscribe();
+
       sb.removeChannel(msg);
       sb.removeChannel(presence);
     };
@@ -94,12 +104,14 @@ export default function App() {
       return;
     }
 
-    const { error } = await sb.auth.signInWithOtp({
-      email: email.trim(),
-      options: {
-        emailRedirectTo: "https://gosnapscom.vercel.app",
-      },
-    });
+    const { error } =
+      await sb.auth.signInWithOtp({
+        email: email.trim(),
+        options: {
+          emailRedirectTo:
+            "https://gosnapscom.vercel.app",
+        },
+      });
 
     setToast(
       error?.message ||
@@ -110,7 +122,9 @@ export default function App() {
   async function loadMembers() {
     const { data, error } = await sb
       .from("profiles")
-      .select("id,display_name,created_at")
+      .select(
+        "id,display_name,created_at"
+      )
       .limit(50);
 
     if (error) {
@@ -118,7 +132,90 @@ export default function App() {
       return;
     }
 
-    if (data) setMembers(data);
+    if (data) {
+      setMembers(data);
+    }
+  }
+
+  async function openFile(path: string) {
+    if (!user) {
+      setToast("Sign in first.");
+      return;
+    }
+
+    if (!path) {
+      setToast("File path is missing.");
+      return;
+    }
+
+    setToast("Preparing file...");
+
+    const { data, error } =
+      await sb.storage
+        .from("gosnaps-files")
+        .createSignedUrl(path, 3600);
+
+    if (error || !data?.signedUrl) {
+      setToast(
+        error?.message ||
+          "Could not open this file."
+      );
+      return;
+    }
+
+    window.open(
+      data.signedUrl,
+      "_blank",
+      "noopener,noreferrer"
+    );
+
+    setToast("File opened.");
+  }
+
+  async function downloadFile(
+    path: string,
+    name: string
+  ) {
+    if (!user) {
+      setToast("Sign in first.");
+      return;
+    }
+
+    if (!path) {
+      setToast("File path is missing.");
+      return;
+    }
+
+    setToast("Preparing download...");
+
+    const { data, error } =
+      await sb.storage
+        .from("gosnaps-files")
+        .createSignedUrl(path, 3600, {
+          download: name || true,
+        });
+
+    if (error || !data?.signedUrl) {
+      setToast(
+        error?.message ||
+          "Could not download this file."
+      );
+      return;
+    }
+
+    const link =
+      document.createElement("a");
+
+    link.href = data.signedUrl;
+    link.download =
+      name || "Academic-Hunters-file";
+    link.target = "_blank";
+
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+
+    setToast("Download started.");
   }
 
   async function send() {
@@ -133,15 +230,19 @@ export default function App() {
       setText("");
 
       try {
-        const r = await fetch("/api/chat", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            message: q,
-          }),
-        });
+        const r = await fetch(
+          "/api/chat",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type":
+                "application/json",
+            },
+            body: JSON.stringify({
+              message: q,
+            }),
+          }
+        );
 
         const d = await r.json();
 
@@ -149,16 +250,20 @@ export default function App() {
           ...old,
           {
             id: Date.now(),
-            sender: "Academic Hunters AI",
+            sender:
+              "Academic Hunters AI",
             text:
               d.reply ||
               d.error ||
               "AI could not respond.",
-            created_at: new Date().toISOString(),
+            created_at:
+              new Date().toISOString(),
           },
         ]);
       } catch {
-        setToast("AI connection failed.");
+        setToast(
+          "AI connection failed."
+        );
       } finally {
         setSending(false);
       }
@@ -171,55 +276,81 @@ export default function App() {
       return;
     }
 
-    const messageText = text.trim();
+    const messageText =
+      text.trim();
 
     if (!messageText && !file) {
-      setToast("Type a message or choose a file.");
+      setToast(
+        "Type a message or choose a file."
+      );
       return;
     }
 
     setSending(true);
 
     try {
-      let attachmentPath: string | null = null;
+      let attachmentPath:
+        | string
+        | null = null;
+
+      let attachmentName:
+        | string
+        | null = null;
 
       if (file) {
         const path =
           `${user.id}/${Date.now()}-${file.name}`;
 
-        const upload = await sb.storage
-          .from("gosnaps-files")
-          .upload(path, file);
+        const upload =
+          await sb.storage
+            .from("gosnaps-files")
+            .upload(path, file);
 
         if (upload.error) {
-          setToast(upload.error.message);
+          setToast(
+            upload.error.message
+          );
           return;
         }
 
         attachmentPath = path;
+        attachmentName = file.name;
       }
 
       const message = {
         sender_id: user.id,
         receiver_id: null,
-        sender: user.email || "Academic Hunters Member",
-        content: messageText || "📎 File",
-        text: messageText || "📎 File",
-        file_url: attachmentPath,
-        attachment: attachmentPath
-          ? {
-              path: attachmentPath,
-              name: file?.name || "File",
-            }
-          : null,
+        sender:
+          user.email ||
+          "Academic Hunters Member",
+        content:
+          messageText ||
+          "📎 File",
+        text:
+          messageText ||
+          "📎 File",
+        file_url:
+          attachmentPath,
+        attachment:
+          attachmentPath
+            ? {
+                path: attachmentPath,
+                name:
+                  attachmentName ||
+                  "File",
+              }
+            : null,
       };
 
-      const result = await sb
-        .from("messages")
-        .insert(message);
+      const result =
+        await sb
+          .from("messages")
+          .insert(message);
 
       if (result.error) {
-        setToast(result.error.message);
+        setToast(
+          result.error.message
+        );
         return;
       }
 
@@ -238,7 +369,9 @@ export default function App() {
 
   function startCall(video: boolean) {
     if (!user) {
-      setToast("Sign in before calling.");
+      setToast(
+        "Sign in before calling."
+      );
       return;
     }
 
@@ -253,7 +386,8 @@ export default function App() {
     <main className="wrap">
       <header>
         <div className="logo">
-          ACADEMIC <span>HUNTERS</span>
+          ACADEMIC{" "}
+          <span>HUNTERS</span>
         </div>
 
         <div className="live">
@@ -271,8 +405,9 @@ export default function App() {
         </h1>
 
         <p>
-          Real-time conversations, AI, files
-          and browser voice/video calling.
+          Real-time conversations, AI,
+          files and browser
+          voice/video calling.
         </p>
       </section>
 
@@ -303,32 +438,46 @@ export default function App() {
 
       <nav>
         <button
-          className={!ai ? "active" : ""}
-          onClick={() => setAi(false)}
+          className={
+            !ai ? "active" : ""
+          }
+          onClick={() =>
+            setAi(false)
+          }
         >
           💬 Messages
         </button>
 
         <button
-          className={ai ? "active" : ""}
-          onClick={() => setAi(true)}
+          className={
+            ai ? "active" : ""
+          }
+          onClick={() =>
+            setAi(true)
+          }
         >
           ✨ Academic Hunters AI
         </button>
 
         <button
-          onClick={() => startCall(false)}
+          onClick={() =>
+            startCall(false)
+          }
         >
           📞 Voice
         </button>
 
         <button
-          onClick={() => startCall(true)}
+          onClick={() =>
+            startCall(true)
+          }
         >
           🎥 Video
         </button>
 
-        <button onClick={loadMembers}>
+        <button
+          onClick={loadMembers}
+        >
           👥 Members
         </button>
       </nav>
@@ -336,7 +485,9 @@ export default function App() {
       {toast && (
         <div
           className="toast"
-          onClick={() => setToast("")}
+          onClick={() =>
+            setToast("")
+          }
         >
           {toast}
         </div>
@@ -355,28 +506,80 @@ export default function App() {
       )}
 
       <section className="chat">
-        {messages.map((m, i) => (
-          <article
-            className={
-              m.sender === "Academic Hunters AI"
-                ? "msg ai"
-                : "msg"
-            }
-            key={m.id ?? i}
-          >
-            <b>{m.sender || "Member"}</b>
-            <p>{m.text || m.content || ""}</p>
+        {messages.map((m, i) => {
+          const attachment =
+            m.attachment;
 
-            {m.attachment && (
-              <small>
-                📎{" "}
-                {typeof m.attachment === "object"
-                  ? m.attachment.name
-                  : m.attachment}
-              </small>
-            )}
-          </article>
-        ))}
+          const attachmentPath =
+            typeof attachment ===
+            "object"
+              ? attachment?.path
+              : attachment;
+
+          const attachmentName =
+            typeof attachment ===
+            "object"
+              ? attachment?.name
+              : "Open file";
+
+          return (
+            <article
+              className={
+                m.sender ===
+                "Academic Hunters AI"
+                  ? "msg ai"
+                  : "msg"
+              }
+              key={m.id ?? i}
+            >
+              <b>
+                {m.sender ||
+                  "Member"}
+              </b>
+
+              <p>
+                {m.text ||
+                  m.content ||
+                  ""}
+              </p>
+
+              {attachmentPath && (
+                <div
+                  style={{
+                    display: "flex",
+                    gap: "8px",
+                    flexWrap: "wrap",
+                    marginTop: "8px",
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={() =>
+                      openFile(
+                        attachmentPath
+                      )
+                    }
+                  >
+                    📂 Open{" "}
+                    {attachmentName}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() =>
+                      downloadFile(
+                        attachmentPath,
+                        attachmentName
+                      )
+                    }
+                  >
+                    ⬇️ Download
+                  </button>
+                </div>
+              )}
+            </article>
+          );
+        })}
       </section>
 
       <div className="composer">
@@ -386,7 +589,8 @@ export default function App() {
             type="file"
             onChange={(e) =>
               setFile(
-                e.target.files?.[0] || null
+                e.target.files?.[0] ||
+                  null
               )
             }
           />
@@ -416,7 +620,9 @@ export default function App() {
           onClick={send}
           disabled={sending}
         >
-          {sending ? "Sending..." : "Send"}
+          {sending
+            ? "Sending..."
+            : "Send"}
         </button>
       </div>
 
@@ -424,7 +630,9 @@ export default function App() {
         <Call
           room={call.room}
           video={call.video}
-          onClose={() => setCall(null)}
+          onClose={() =>
+            setCall(null)
+          }
         />
       )}
     </main>
