@@ -23,12 +23,18 @@ export default function App() {
     let mounted = true;
 
     sb.auth.getUser().then(({ data }) => {
-      if (mounted) setUser(data.user);
+      if (mounted) {
+        setUser(data.user);
+      }
     });
 
-    const auth = sb.auth.onAuthStateChange((_event, session) => {
-      if (mounted) setUser(session?.user ?? null);
-    });
+    const auth = sb.auth.onAuthStateChange(
+      (_event, session) => {
+        if (mounted) {
+          setUser(session?.user ?? null);
+        }
+      }
+    );
 
     const msg = sb
       .channel("gosnaps-messages")
@@ -55,7 +61,9 @@ export default function App() {
 
     sb.from("messages")
       .select("*")
-      .order("created_at", { ascending: true })
+      .order("created_at", {
+        ascending: true,
+      })
       .limit(100)
       .then(({ data }) => {
         if (mounted && data) {
@@ -63,22 +71,30 @@ export default function App() {
         }
       });
 
-    const presence = sb.channel("gosnaps-presence", {
-      config: {
-        presence: {
-          key: Math.random().toString(36),
+    const presence = sb.channel(
+      "gosnaps-presence",
+      {
+        config: {
+          presence: {
+            key: Math.random()
+              .toString(36),
+          },
         },
-      },
-    });
+      }
+    );
 
     presence
-      .on("presence", { event: "sync" }, () => {
-        setOnline(
-          Object.keys(
-            presence.presenceState()
-          ).length
-        );
-      })
+      .on(
+        "presence",
+        { event: "sync" },
+        () => {
+          setOnline(
+            Object.keys(
+              presence.presenceState()
+            ).length
+          );
+        }
+      )
       .subscribe(async (status) => {
         if (status === "SUBSCRIBED") {
           await presence.track({
@@ -109,7 +125,7 @@ export default function App() {
         email: email.trim(),
         options: {
           emailRedirectTo:
-            "https://gosnapscom.vercel.app",
+            "https://gosnaps.com",
         },
       });
 
@@ -120,6 +136,8 @@ export default function App() {
   }
 
   async function loadMembers() {
+    setToast("Loading members...");
+
     const { data, error } = await sb
       .from("profiles")
       .select(
@@ -133,8 +151,10 @@ export default function App() {
     }
 
     if (data) {
-  setMembers(data);
-  setToast(`${data.length} member(s) found`);
+      setMembers(data);
+      setToast(
+        `${data.length} member(s) found`
+      );
     }
   }
 
@@ -154,9 +174,15 @@ export default function App() {
     const { data, error } =
       await sb.storage
         .from("gosnaps-files")
-        .createSignedUrl(path, 3600);
+        .createSignedUrl(
+          path,
+          3600
+        );
 
-    if (error || !data?.signedUrl) {
+    if (
+      error ||
+      !data?.signedUrl
+    ) {
       setToast(
         error?.message ||
           "Could not open this file."
@@ -192,11 +218,19 @@ export default function App() {
     const { data, error } =
       await sb.storage
         .from("gosnaps-files")
-        .createSignedUrl(path, 3600, {
-          download: name || true,
-        });
+        .createSignedUrl(
+          path,
+          3600,
+          {
+            download:
+              name || true,
+          }
+        );
 
-    if (error || !data?.signedUrl) {
+    if (
+      error ||
+      !data?.signedUrl
+    ) {
       setToast(
         error?.message ||
           "Could not download this file."
@@ -207,16 +241,24 @@ export default function App() {
     const link =
       document.createElement("a");
 
-    link.href = data.signedUrl;
+    link.href =
+      data.signedUrl;
+
     link.download =
-      name || "Academic-Hunters-file";
+      name ||
+      "Academic-Hunters-file";
+
     link.target = "_blank";
 
     document.body.appendChild(link);
+
     link.click();
+
     link.remove();
 
-    setToast("Download started.");
+    setToast(
+      "Download started."
+    );
   }
 
   async function send() {
@@ -280,7 +322,10 @@ export default function App() {
     const messageText =
       text.trim();
 
-    if (!messageText && !file) {
+    if (
+      !messageText &&
+      !file
+    ) {
       setToast(
         "Type a message or choose a file."
       );
@@ -305,7 +350,10 @@ export default function App() {
         const upload =
           await sb.storage
             .from("gosnaps-files")
-            .upload(path, file);
+            .upload(
+              path,
+              file
+            );
 
         if (upload.error) {
           setToast(
@@ -315,27 +363,35 @@ export default function App() {
         }
 
         attachmentPath = path;
-        attachmentName = file.name;
+        attachmentName =
+          file.name;
       }
 
       const message = {
         sender_id: user.id,
+
         receiver_id: null,
+
         sender:
           user.email ||
           "Academic Hunters Member",
+
         content:
           messageText ||
           "📎 File",
+
         text:
           messageText ||
           "📎 File",
+
         file_url:
           attachmentPath,
+
         attachment:
           attachmentPath
             ? {
-                path: attachmentPath,
+                path:
+                  attachmentPath,
                 name:
                   attachmentName ||
                   "File",
@@ -368,7 +424,9 @@ export default function App() {
     }
   }
 
-  function startCall(video: boolean) {
+  function startCall(
+    video: boolean
+  ) {
     if (!user) {
       setToast(
         "Sign in before calling."
@@ -377,7 +435,8 @@ export default function App() {
     }
 
     setCall({
-      room: crypto.randomUUID(),
+      room:
+        crypto.randomUUID(),
       video,
       initiator: true,
     });
@@ -406,8 +465,8 @@ export default function App() {
         </h1>
 
         <p>
-          Real-time conversations, AI,
-          files and browser
+          Real-time conversations,
+          AI, files and browser
           voice/video calling.
         </p>
       </section>
@@ -417,7 +476,9 @@ export default function App() {
           <input
             value={email}
             onChange={(e) =>
-              setEmail(e.target.value)
+              setEmail(
+                e.target.value
+              )
             }
             placeholder="Email address"
             type="email"
@@ -440,7 +501,9 @@ export default function App() {
       <nav>
         <button
           className={
-            !ai ? "active" : ""
+            !ai
+              ? "active"
+              : ""
           }
           onClick={() =>
             setAi(false)
@@ -451,7 +514,9 @@ export default function App() {
 
         <button
           className={
-            ai ? "active" : ""
+            ai
+              ? "active"
+              : ""
           }
           onClick={() =>
             setAi(true)
@@ -477,13 +542,15 @@ export default function App() {
         </button>
 
         <button
-  onClick={() => {
-    setToast("Members button clicked");
-    loadMembers();
-  }}
->
-  👥 Members
-</button>
+          onClick={() => {
+            setToast(
+              "Loading members..."
+            );
+            loadMembers();
+          }}
+        >
+          👥 Members
+        </button>
       </nav>
 
       {toast && (
@@ -510,85 +577,95 @@ export default function App() {
       )}
 
       <section className="chat">
-        {messages.map((m, i) => {
-          const attachment =
-            m.attachment;
+        {messages.map(
+          (m, i) => {
+            const attachment =
+              m.attachment;
 
-          const attachmentPath =
-            typeof attachment ===
-            "object"
-              ? attachment?.path
-              : attachment;
+            const attachmentPath =
+              typeof attachment ===
+              "object"
+                ? attachment?.path
+                : attachment;
 
-          const attachmentName =
-            typeof attachment ===
-            "object"
-              ? attachment?.name
-              : "Open file";
+            const attachmentName =
+              typeof attachment ===
+              "object"
+                ? attachment?.name
+                : "Open file";
 
-          return (
-            <article
-              className={
-                m.sender ===
-                "Academic Hunters AI"
-                  ? "msg ai"
-                  : "msg"
-              }
-              key={m.id ?? i}
-            >
-              <b>
-                {m.sender ||
-                  "Member"}
-              </b>
+            return (
+              <article
+                className={
+                  m.sender ===
+                  "Academic Hunters AI"
+                    ? "msg ai"
+                    : "msg"
+                }
+                key={
+                  m.id ?? i
+                }
+              >
+                <b>
+                  {m.sender ||
+                    "Member"}
+                </b>
 
-              <p>
-                {m.text ||
-                  m.content ||
-                  ""}
-              </p>
+                <p>
+                  {m.text ||
+                    m.content ||
+                    ""}
+                </p>
 
-              {attachmentPath && (
-                <div
-                  style={{
-                    display: "flex",
-                    gap: "8px",
-                    flexWrap: "wrap",
-                    marginTop: "8px",
-                  }}
-                >
-                  <button
-                    type="button"
-                    onClick={() =>
-                      openFile(
-                        attachmentPath
-                      )
-                    }
+                {attachmentPath && (
+                  <div
+                    style={{
+                      display:
+                        "flex",
+                      gap: "8px",
+                      flexWrap:
+                        "wrap",
+                      marginTop:
+                        "8px",
+                    }}
                   >
-                    📂 Open{" "}
-                    {attachmentName}
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() =>
-                      downloadFile(
-                        attachmentPath,
+                    <button
+                      type="button"
+                      onClick={() =>
+                        openFile(
+                          attachmentPath
+                        )
+                      }
+                    >
+                      📂 Open{" "}
+                      {
                         attachmentName
-                      )
-                    }
-                  >
-                    ⬇️ Download
-                  </button>
-                </div>
-              )}
-            </article>
-          );
-        })}
+                      }
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() =>
+                        downloadFile(
+                          attachmentPath,
+                          attachmentName
+                        )
+                      }
+                    >
+                      ⬇️ Download
+                    </button>
+                  </div>
+                )}
+              </article>
+            );
+          }
+        )}
       </section>
 
       <div className="composer">
         <label>
           📎
+
           <input
             type="file"
             onChange={(e) =>
@@ -603,7 +680,9 @@ export default function App() {
         <input
           value={text}
           onChange={(e) =>
-            setText(e.target.value)
+            setText(
+              e.target.value
+            )
           }
           onKeyDown={(e) => {
             if (
@@ -634,6 +713,9 @@ export default function App() {
         <Call
           room={call.room}
           video={call.video}
+          initiator={
+            call.initiator
+          }
           onClose={() =>
             setCall(null)
           }
