@@ -33,6 +33,7 @@ export default function App() {
   const [user, setUser] = useState<any>(null);
   const [email, setEmail] = useState("");
   const [members, setMembers] = useState<any[]>([]);
+  const [memberSearch, setMemberSearch] = useState("");
   const [messages, setMessages] = useState<any[]>([]);
   const [privateMessages, setPrivateMessages] =
     useState<PrivateMessage[]>([]);
@@ -305,7 +306,7 @@ export default function App() {
       .select(
         "id,display_name,created_at"
       )
-      .limit(50);
+      .limit(100);
 
     if (error) {
       setToast(error.message);
@@ -342,12 +343,6 @@ export default function App() {
     setToast("Opening private chat...");
 
     try {
-      /*
-       * Use a predictable conversation ID based on
-       * the two users. This prevents creating a new
-       * conversation every time the same two members
-       * chat.
-       */
       const ids = [user.id, member.id].sort();
 
       const stableConversationId =
@@ -363,10 +358,6 @@ export default function App() {
             id: stableConversationId,
           });
 
-      /*
-       * A duplicate means the conversation already
-       * exists, which is fine.
-       */
       if (
         conversationInsert.error &&
         !conversationInsert.error.message
@@ -459,9 +450,6 @@ export default function App() {
         )
         .join("");
 
-    /*
-     * UUID format from the SHA-256 hash.
-     */
     return [
       hex.slice(0, 8),
       hex.slice(8, 12),
@@ -503,9 +491,6 @@ export default function App() {
 
     setPrivateLoading(false);
 
-    /*
-     * Mark messages from the other member as read.
-     */
     if (user) {
       await sb
         .from("private_messages")
@@ -1013,6 +998,23 @@ export default function App() {
     );
   }
 
+  const filteredMembers =
+    members.filter((m) => {
+      if (!user || m.id === user.id) {
+        return false;
+      }
+
+      const name =
+        (
+          m.display_name ||
+          "Academic Hunters member"
+        ).toLowerCase();
+
+      return name.includes(
+        memberSearch.trim().toLowerCase()
+      );
+    });
+
   return (
     <main className="wrap">
       <header>
@@ -1209,14 +1211,41 @@ export default function App() {
             Academic Hunters Members
           </h3>
 
-          {members
-            .filter(
-              (m) =>
-                !user ||
-                m.id !==
-                  user.id
-            )
-            .map((m) => (
+          <input
+            type="search"
+            value={memberSearch}
+            onChange={(e) =>
+              setMemberSearch(
+                e.target.value
+              )
+            }
+            placeholder="🔎 Search members..."
+            style={{
+              width: "100%",
+              padding: "11px 13px",
+              borderRadius: "10px",
+              border: "1px solid rgba(255,255,255,.18)",
+              outline: "none",
+              marginBottom: "12px",
+              boxSizing: "border-box",
+            }}
+          />
+
+          {filteredMembers.length === 0 ? (
+            <div
+              style={{
+                padding: "14px",
+                borderRadius: "12px",
+                background:
+                  "rgba(255,255,255,.08)",
+              }}
+            >
+              {memberSearch.trim()
+                ? "No members found."
+                : "No other members available."}
+            </div>
+          ) : (
+            filteredMembers.map((m) => (
               <div
                 key={m.id}
                 style={{
@@ -1298,7 +1327,8 @@ export default function App() {
                   </button>
                 </div>
               </div>
-            ))}
+            ))
+          )}
         </aside>
       )}
 
