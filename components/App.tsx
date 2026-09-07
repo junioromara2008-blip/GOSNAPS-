@@ -1,6 +1,11 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { getSupabase } from "@/lib/supabase";
 import Call from "./Call";
 
@@ -8,6 +13,7 @@ type CallState = {
   room: string;
   video: boolean;
   initiator: boolean;
+  invitationId: string;
 };
 
 type IncomingCall = {
@@ -16,6 +22,7 @@ type IncomingCall = {
   caller_name: string;
   room_id: string;
   video: boolean;
+  expires_at?: string | null;
 };
 
 type PrivateMessage = {
@@ -27,6 +34,8 @@ type PrivateMessage = {
   read_at: string | null;
   file_path?: string | null;
   file_name?: string | null;
+  file_size?: number | null;
+  mime_type?: string | null;
 };
 
 type Member = {
@@ -37,41 +46,67 @@ type Member = {
   avatar_url?: string | null;
 };
 
+function isDuplicateError(error: any) {
+  if (!error) return false;
+
+  return (
+    error.code === "23505" ||
+    /duplicate|already exists/i.test(
+      error.message || ""
+    )
+  );
+}
+
 export default function App() {
   const sb = useRef(getSupabase()).current;
 
   const [user, setUser] = useState<any>(null);
   const [email, setEmail] = useState("");
 
-  const [members, setMembers] = useState<Member[]>([]);
-  const [memberSearch, setMemberSearch] = useState("");
+  const [members, setMembers] = useState<Member[]>(
+    []
+  );
 
-  const [messages, setMessages] = useState<any[]>([]);
+  const [memberSearch, setMemberSearch] =
+    useState("");
+
+  const [messages, setMessages] = useState<any[]>(
+    []
+  );
+
   const [privateMessages, setPrivateMessages] =
     useState<PrivateMessage[]>([]);
 
   const [text, setText] = useState("");
-  const [privateText, setPrivateText] = useState("");
+  const [privateText, setPrivateText] =
+    useState("");
 
   const [ai, setAi] = useState(false);
 
-  const [file, setFile] = useState<File | null>(null);
+  const [file, setFile] = useState<File | null>(
+    null
+  );
+
   const [privateFile, setPrivateFile] =
     useState<File | null>(null);
 
   const [call, setCall] =
     useState<CallState | null>(null);
 
+  const callRef = useRef<CallState | null>(null);
+
   const [incomingCall, setIncomingCall] =
     useState<IncomingCall | null>(null);
 
   const [toast, setToast] = useState("");
+
   const [online, setOnline] = useState(0);
 
   const [onlineUsers, setOnlineUsers] =
     useState<Record<string, boolean>>({});
 
   const [sending, setSending] = useState(false);
+
   const [callingMember, setCallingMember] =
     useState<string | null>(null);
 
@@ -96,6 +131,112 @@ export default function App() {
   const [savingProfile, setSavingProfile] =
     useState(false);
 
+  const [notificationPermission, setNotificationPermission] =
+    useState<NotificationPermission | "unsupported">(
+      "default"
+    );
+
+  /*
+   * Keep a ref of the active call.
+   */
+  useEffect(() => {
+    callRef.current = call;
+  }, [call]);
+
+  /*
+   * Browser notification helper.
+   */
+  const notifyBrowser = useCallback(
+    (
+      title: string,
+      body: string
+    ) => {
+      try {
+        if (
+          typeof window === "undefined" ||
+          !("Notification" in window)
+        ) {
+          return;
+        }
+
+        if (
+          Notification.permission ===
+          "granted"
+        ) {
+          new Notification(title, {
+            body,
+            icon: "/favicon.ico",
+          });
+        }
+      } catch {
+        // Browser notifications are optional.
+      }
+    },
+    []
+  );
+
+  /*
+   * Check notification support.
+   */
+  useEffect(() => {
+    if (
+      typeof window !== "undefined" &&
+      "Notification" in window
+    ) {
+      setNotificationPermission(
+        Notification.permission
+      );
+    } else {
+      setNotificationPermission(
+        "unsupported"
+      );
+    }
+  }, []);
+
+  /*
+   * Enable browser notifications.
+   */
+  async function enableNotifications() {
+    if (
+      typeof window === "undefined" ||
+      !("Notification" in window)
+    ) {
+      setToast(
+        "This browser does not support notifications."
+      );
+      return;
+    }
+
+    try {
+      const permission =
+        await Notification.requestPermission();
+
+      setNotificationPermission(
+        permission
+      );
+
+      if (permission === "granted") {
+        setToast(
+          "Notifications enabled."
+        );
+      } else if (
+        permission === "denied"
+      ) {
+        setToast(
+          "Notifications are blocked in your browser."
+        );
+      } else {
+        setToast(
+          "Notification permission was not granted."
+        );
+      }
+    } catch {
+      setToast(
+        "Could not enable notifications."
+      );
+    }
+  }
+
   /*
    * AUTH
    */
@@ -108,13 +249,16 @@ export default function App() {
       }
     });
 
-    const auth = sb.auth.onAuthStateChange(
-      (_event, session) => {
-        if (mounted) {
-          setUser(session?.user ?? null);
+    const auth =
+      sb.auth.onAuthStateChange(
+        (_event, session) => {
+          if (mounted) {
+            setUser(
+              session?.user ?? null
+            );
+          }
         }
-      }
-    );
+      );
 
     return () => {
       mounted = false;
@@ -129,11 +273,15 @@ export default function App() {
     if (!user) {
       setOnline(0);
       setOnlineUsers({});
+      setIncomingCall(null);
       return;
     }
 
     let mounted = true;
 
+    /*
+     * PUBLIC MESSAGES
+     */
     const msg = sb
       .channel("gosnaps-messages")
       .on(
@@ -144,14 +292,21 @@ export default function App() {
           table: "messages",
         },
         (payload) => {
+          if (!mounted) return;
+
           setMessages((old) => {
             const exists = old.some(
-              (m) => m.id === payload.new.id
+              (m) =>
+                m.id ===
+                payload.new.id
             );
 
             return exists
               ? old
-              : [...old, payload.new];
+              : [
+                  ...old,
+                  payload.new,
+                ];
           });
         }
       )
@@ -164,111 +319,207 @@ export default function App() {
       })
       .limit(100)
       .then(({ data }) => {
-        if (mounted && data) {
+        if (
+          mounted &&
+          data
+        ) {
           setMessages(data);
         }
       });
 
     /*
-     * REALTIME PRESENCE
+     * PRESENCE
      */
-    const presence = sb.channel(
-      "gosnaps-presence",
-      {
-        config: {
-          presence: {
-            key: user.id,
+    const presence =
+      sb.channel(
+        "gosnaps-presence",
+        {
+          config: {
+            presence: {
+              key: user.id,
+            },
           },
-        },
-      }
-    );
-
-    const updatePresence = () => {
-      const state =
-        presence.presenceState();
-
-      const users: Record<
-        string,
-        boolean
-      > = {};
-
-      Object.keys(state).forEach(
-        (key) => {
-          users[key] = true;
         }
       );
 
-      setOnlineUsers(users);
-      setOnline(
-        Object.keys(users).length
-      );
-    };
+    const updatePresence =
+      () => {
+        const state =
+          presence.presenceState();
+
+        const users: Record<
+          string,
+          boolean
+        > = {};
+
+        Object.keys(state).forEach(
+          (key) => {
+            users[key] = true;
+          }
+        );
+
+        setOnlineUsers(users);
+
+        setOnline(
+          Object.keys(users)
+            .length
+        );
+      };
 
     presence
       .on(
         "presence",
-        { event: "sync" },
+        {
+          event: "sync",
+        },
         updatePresence
       )
       .on(
         "presence",
-        { event: "join" },
+        {
+          event: "join",
+        },
         updatePresence
       )
       .on(
         "presence",
-        { event: "leave" },
+        {
+          event: "leave",
+        },
         updatePresence
       )
-      .subscribe(async (status) => {
-        if (status === "SUBSCRIBED") {
-          await presence.track({
-            user_id: user.id,
-            online_at:
-              new Date().toISOString(),
-          });
+      .subscribe(
+        async (status) => {
+          if (
+            status ===
+            "SUBSCRIBED"
+          ) {
+            try {
+              await presence.track(
+                {
+                  user_id:
+                    user.id,
+                  online_at:
+                    new Date().toISOString(),
+                }
+              );
 
-          updatePresence();
+              updatePresence();
+            } catch {
+              // Presence is optional.
+            }
+          }
         }
-      });
+      );
 
     /*
      * CALL INVITATIONS
      */
-    const calls = sb
-      .channel("gosnaps-call-invitations")
-      .on(
-        "postgres_changes",
-        {
-          event: "INSERT",
-          schema: "public",
-          table: "call_invitations",
-        },
-        async (payload) => {
-          if (!mounted) return;
+    const calls =
+      sb
+        .channel(
+          "gosnaps-call-invitations"
+        )
+        .on(
+          "postgres_changes",
+          {
+            event: "INSERT",
+            schema: "public",
+            table:
+              "call_invitations",
+          },
+          async (payload) => {
+            if (!mounted)
+              return;
 
-          const invitation =
-            payload.new as any;
+            const invitation =
+              payload.new as any;
 
-          if (
-            invitation.receiver_id !==
-            user.id
-          ) {
-            return;
-          }
+            /*
+             * Only the receiver handles
+             * incoming calls.
+             */
+            if (
+              invitation.receiver_id !==
+              user.id
+            ) {
+              return;
+            }
 
-          if (
-            invitation.status !==
-            "ringing"
-          ) {
-            return;
-          }
+            if (
+              invitation.status !==
+              "ringing"
+            ) {
+              return;
+            }
 
-          let callerName =
-            "Academic Hunters member";
+            /*
+             * Ignore expired invitations.
+             */
+            if (
+              invitation.expires_at &&
+              new Date(
+                invitation.expires_at
+              ).getTime() <=
+                Date.now()
+            ) {
+              await sb
+                .from(
+                  "call_invitations"
+                )
+                .update({
+                  status:
+                    "expired",
+                  ended_at:
+                    new Date().toISOString(),
+                })
+                .eq(
+                  "id",
+                  invitation.id
+                )
+                .eq(
+                  "status",
+                  "ringing"
+                );
 
-          const { data: profile } =
-            await sb
+              return;
+            }
+
+            /*
+             * Do not replace an active call
+             * with another incoming call.
+             */
+            if (
+              callRef.current
+            ) {
+              await sb
+                .from(
+                  "call_invitations"
+                )
+                .update({
+                  status:
+                    "rejected",
+                  ended_at:
+                    new Date().toISOString(),
+                })
+                .eq(
+                  "id",
+                  invitation.id
+                )
+                .eq(
+                  "status",
+                  "ringing"
+                );
+
+              return;
+            }
+
+            let callerName =
+              "Academic Hunters member";
+
+            const {
+              data: profile,
+            } = await sb
               .from("profiles")
               .select(
                 "display_name"
@@ -279,91 +530,399 @@ export default function App() {
               )
               .maybeSingle();
 
-          if (profile?.display_name) {
-            callerName =
-              profile.display_name;
-          }
+            if (
+              profile?.display_name
+            ) {
+              callerName =
+                profile.display_name;
+            }
 
-          setIncomingCall({
-            id: invitation.id,
-            caller_id:
-              invitation.caller_id,
-            caller_name:
-              callerName,
-            room_id:
-              invitation.room_id,
-            video:
-              invitation.video,
-          });
+            const incoming: IncomingCall =
+              {
+                id:
+                  invitation.id,
+                caller_id:
+                  invitation.caller_id,
+                caller_name:
+                  callerName,
+                room_id:
+                  invitation.room_id,
+                video:
+                  Boolean(
+                    invitation.video
+                  ),
+                expires_at:
+                  invitation.expires_at ??
+                  null,
+              };
 
-          setToast(
-            invitation.video
-              ? "Incoming video call"
-              : "Incoming voice call"
-          );
-        }
-      )
-      .on(
-        "postgres_changes",
-        {
-          event: "UPDATE",
-          schema: "public",
-          table: "call_invitations",
-        },
-        (payload) => {
-          if (!mounted) return;
+            setIncomingCall(
+              incoming
+            );
 
-          const invitation =
-            payload.new as any;
-
-          if (
-            invitation.caller_id !==
-            user.id
-          ) {
-            return;
-          }
-
-          if (
-            invitation.status ===
-            "accepted"
-          ) {
-            setCallingMember(null);
-
-            setCall({
-              room:
-                invitation.room_id,
-              video:
-                invitation.video,
-              initiator: true,
-            });
+            const callMessage =
+              invitation.video
+                ? "Incoming video call"
+                : "Incoming voice call";
 
             setToast(
-              "Call accepted. Connecting..."
+              `${callMessage} from ${callerName}`
             );
-          }
 
-          if (
-            invitation.status ===
-            "rejected"
-          ) {
-            setCallingMember(null);
+            notifyBrowser(
+              callMessage,
+              `${callerName} is calling you.`
+            );
+
+            /*
+             * Automatically expire the invitation
+             * after its expiry time.
+             */
+            if (
+              invitation.expires_at
+            ) {
+              const remaining =
+                Math.max(
+                  0,
+                  new Date(
+                    invitation.expires_at
+                  ).getTime() -
+                    Date.now()
+                );
+
+              window.setTimeout(
+                async () => {
+                  if (
+                    !mounted
+                  ) {
+                    return;
+                  }
+
+                  setIncomingCall(
+                    (current) =>
+                      current?.id ===
+                      invitation.id
+                        ? null
+                        : current
+                  );
+
+                  await sb
+                    .from(
+                      "call_invitations"
+                    )
+                    .update({
+                      status:
+                        "expired",
+                      ended_at:
+                        new Date().toISOString(),
+                    })
+                    .eq(
+                      "id",
+                      invitation.id
+                    )
+                    .eq(
+                      "status",
+                      "ringing"
+                    );
+                },
+                remaining
+              );
+            }
+          }
+        )
+        .on(
+          "postgres_changes",
+          {
+            event: "UPDATE",
+            schema: "public",
+            table:
+              "call_invitations",
+          },
+          (payload) => {
+            if (!mounted)
+              return;
+
+            const invitation =
+              payload.new as any;
+
+            /*
+             * Caller side.
+             */
+            if (
+              invitation.caller_id ===
+              user.id
+            ) {
+              if (
+                invitation.status ===
+                "accepted"
+              ) {
+                setCallingMember(
+                  null
+                );
+
+                setCall({
+                  room:
+                    invitation.room_id,
+                  video:
+                    Boolean(
+                      invitation.video
+                    ),
+                  initiator:
+                    true,
+                  invitationId:
+                    invitation.id,
+                });
+
+                setToast(
+                  "Call accepted. Connecting..."
+                );
+
+                return;
+              }
+
+              if (
+                invitation.status ===
+                  "rejected" ||
+                invitation.status ===
+                  "expired" ||
+                invitation.status ===
+                  "cancelled" ||
+                invitation.status ===
+                  "ended"
+              ) {
+                setCallingMember(
+                  null
+                );
+
+                if (
+                  callRef.current
+                    ?.invitationId ===
+                  invitation.id
+                ) {
+                  setCall(null);
+                }
+
+                if (
+                  invitation.status ===
+                  "rejected"
+                ) {
+                  setToast(
+                    "The member declined the call."
+                  );
+                } else if (
+                  invitation.status ===
+                  "expired"
+                ) {
+                  setToast(
+                    "The call invitation expired."
+                  );
+                } else if (
+                  invitation.status ===
+                  "ended"
+                ) {
+                  setToast(
+                    "The call ended."
+                  );
+                }
+
+                return;
+              }
+            }
+
+            /*
+             * Receiver side.
+             */
+            if (
+              invitation.receiver_id ===
+              user.id
+            ) {
+              if (
+                invitation.status ===
+                  "cancelled" ||
+                invitation.status ===
+                  "expired" ||
+                invitation.status ===
+                  "ended" ||
+                invitation.status ===
+                  "rejected"
+              ) {
+                setIncomingCall(
+                  (current) =>
+                    current?.id ===
+                    invitation.id
+                      ? null
+                      : current
+                );
+
+                if (
+                  callRef.current
+                    ?.invitationId ===
+                  invitation.id
+                ) {
+                  setCall(null);
+                }
+              }
+            }
+          }
+        )
+        .subscribe();
+
+    /*
+     * GLOBAL PRIVATE MESSAGE NOTIFICATIONS
+     *
+     * This does not insert the message into
+     * the current chat. The current-chat channel
+     * handles that separately.
+     */
+    const privateNotifications =
+      sb
+        .channel(
+          "gosnaps-private-notifications"
+        )
+        .on(
+          "postgres_changes",
+          {
+            event: "INSERT",
+            schema: "public",
+            table:
+              "private_messages",
+          },
+          async (payload) => {
+            if (!mounted)
+              return;
+
+            const incoming =
+              payload.new as PrivateMessage;
+
+            if (
+              incoming.sender_id ===
+              user.id
+            ) {
+              return;
+            }
+
+            /*
+             * Don't create a browser notification
+             * for the conversation currently open.
+             */
+            if (
+              incoming.conversation_id ===
+              conversationId
+            ) {
+              return;
+            }
+
+            let senderName =
+              "Academic Hunters member";
+
+            const {
+              data: sender,
+            } = await sb
+              .from("profiles")
+              .select(
+                "display_name"
+              )
+              .eq(
+                "id",
+                incoming.sender_id
+              )
+              .maybeSingle();
+
+            if (
+              sender?.display_name
+            ) {
+              senderName =
+                sender.display_name;
+            }
+
+            const body =
+              incoming.file_name
+                ? `${senderName} sent you a file: ${incoming.file_name}`
+                : `${senderName}: ${incoming.content}`;
 
             setToast(
-              "The member declined the call."
+              "New private message"
+            );
+
+            notifyBrowser(
+              "Academic Hunters",
+              body
             );
           }
-        }
-      )
-      .subscribe();
+        )
+        .subscribe();
+
+    /*
+     * NEW MEMBER NOTIFICATIONS
+     */
+    const profileNotifications =
+      sb
+        .channel(
+          "gosnaps-new-members"
+        )
+        .on(
+          "postgres_changes",
+          {
+            event: "INSERT",
+            schema: "public",
+            table: "profiles",
+          },
+          (payload) => {
+            if (!mounted)
+              return;
+
+            const profile =
+              payload.new as any;
+
+            if (
+              profile.id ===
+              user.id
+            ) {
+              return;
+            }
+
+            const name =
+              profile.display_name ||
+              "A new member";
+
+            setToast(
+              `${name} joined Academic Hunters.`
+            );
+
+            notifyBrowser(
+              "New Academic Hunters member",
+              `${name} joined Academic Hunters.`
+            );
+
+            /*
+             * Refresh member list.
+             */
+            void loadMembers();
+          }
+        )
+        .subscribe();
 
     return () => {
       mounted = false;
 
       sb.removeChannel(msg);
-      sb.removeChannel(presence);
+      sb.removeChannel(
+        presence
+      );
       sb.removeChannel(calls);
+      sb.removeChannel(
+        privateNotifications
+      );
+      sb.removeChannel(
+        profileNotifications
+      );
     };
-  }, [sb, user]);
+  }, [
+    sb,
+    user,
+    conversationId,
+    notifyBrowser,
+  ]);
 
   /*
    * LOAD OWN PROFILE
@@ -375,7 +934,7 @@ export default function App() {
       return;
     }
 
-    loadMyProfile();
+    void loadMyProfile();
   }, [user]);
 
   async function loadMyProfile() {
@@ -395,31 +954,73 @@ export default function App() {
     }
 
     if (data) {
-      let avatarUrl = null;
+      let avatarUrl:
+        | string
+        | null = null;
 
-      if (data.avatar_path) {
+      if (
+        data.avatar_path
+      ) {
         const result =
           await sb.storage
-            .from("gosnaps-avatars")
+            .from(
+              "gosnaps-avatars"
+            )
             .createSignedUrl(
               data.avatar_path,
               3600
             );
 
         avatarUrl =
-          result.data?.signedUrl ||
+          result.data
+            ?.signedUrl ||
           null;
       }
 
-      const profile = {
-        ...data,
-        avatar_url: avatarUrl,
-      };
+      const profile: Member =
+        {
+          ...data,
+          avatar_url:
+            avatarUrl,
+        };
 
-      setMyProfile(profile);
-      setDisplayName(
-        data.display_name || ""
+      setMyProfile(
+        profile
       );
+
+      setDisplayName(
+        data.display_name ||
+          ""
+      );
+    } else {
+      /*
+       * Create a profile if one does not exist.
+       */
+      const fallbackName =
+        user.user_metadata
+          ?.display_name ||
+        user.email
+          ?.split("@")[0] ||
+        "Academic Hunters member";
+
+      const created =
+        await sb
+          .from("profiles")
+          .insert({
+            id: user.id,
+            display_name:
+              fallbackName,
+          });
+
+      if (
+        !created.error
+      ) {
+        setDisplayName(
+          fallbackName
+        );
+
+        await loadMyProfile();
+      }
     }
   }
 
@@ -436,7 +1037,8 @@ export default function App() {
 
     const { error } =
       await sb.auth.signInWithOtp({
-        email: email.trim(),
+        email:
+          email.trim(),
         options: {
           emailRedirectTo:
             "https://gosnaps.com",
@@ -467,15 +1069,36 @@ export default function App() {
         myProfile?.avatar_path ||
         null;
 
+      const oldAvatarPath =
+        myProfile?.avatar_path ||
+        null;
+
       if (profileFile) {
+        if (
+          !profileFile.type.startsWith(
+            "image/"
+          )
+        ) {
+          setToast(
+            "Please choose an image."
+          );
+          return;
+        }
+
         const extension =
           profileFile.name
             .split(".")
             .pop() ||
           "jpg";
 
+        const safeExtension =
+          extension.replace(
+            /[^a-zA-Z0-9]/g,
+            ""
+          ) || "jpg";
+
         const path =
-          `${user.id}/avatar-${Date.now()}.${extension}`;
+          `${user.id}/avatar-${Date.now()}.${safeExtension}`;
 
         const upload =
           await sb.storage
@@ -490,7 +1113,9 @@ export default function App() {
               }
             );
 
-        if (upload.error) {
+        if (
+          upload.error
+        ) {
           setToast(
             upload.error.message
           );
@@ -519,10 +1144,28 @@ export default function App() {
         return;
       }
 
+      /*
+       * Remove previous avatar after
+       * the new profile is saved.
+       */
+      if (
+        profileFile &&
+        oldAvatarPath &&
+        oldAvatarPath !==
+          avatarPath
+      ) {
+        await sb.storage
+          .from(
+            "gosnaps-avatars"
+          )
+          .remove([
+            oldAvatarPath,
+          ]);
+      }
+
       setProfileFile(null);
 
       await loadMyProfile();
-
       await loadMembers();
 
       setToast(
@@ -537,10 +1180,6 @@ export default function App() {
    * MEMBERS
    */
   async function loadMembers() {
-    setToast(
-      "Loading members..."
-    );
-
     const { data, error } =
       await sb
         .from("profiles")
@@ -559,10 +1198,16 @@ export default function App() {
     const enriched: Member[] =
       [];
 
-    for (const member of data || []) {
-      let avatarUrl = null;
+    for (
+      const member of data || []
+    ) {
+      let avatarUrl:
+        | string
+        | null = null;
 
-      if (member.avatar_path) {
+      if (
+        member.avatar_path
+      ) {
         const result =
           await sb.storage
             .from(
@@ -574,20 +1219,20 @@ export default function App() {
             );
 
         avatarUrl =
-          result.data?.signedUrl ||
+          result.data
+            ?.signedUrl ||
           null;
       }
 
       enriched.push({
         ...member,
-        avatar_url: avatarUrl,
+        avatar_url:
+          avatarUrl,
       });
     }
 
-    setMembers(enriched);
-
-    setToast(
-      `${enriched.length} member(s) found`
+    setMembers(
+      enriched
     );
   }
 
@@ -655,7 +1300,9 @@ export default function App() {
       return;
     }
 
-    setPrivateLoading(true);
+    setPrivateLoading(
+      true
+    );
 
     try {
       const ids =
@@ -667,23 +1314,20 @@ export default function App() {
           ids[1]
         );
 
-      /*
-       * Create conversation.
-       * Duplicate is okay because
-       * the conversation already exists.
-       */
       const conversation =
         await sb
-          .from("conversations")
+          .from(
+            "conversations"
+          )
           .insert({
             id,
           });
 
       if (
         conversation.error &&
-        !conversation.error.message
-          .toLowerCase()
-          .includes("duplicate")
+        !isDuplicateError(
+          conversation.error
+        )
       ) {
         setToast(
           conversation.error.message
@@ -692,9 +1336,7 @@ export default function App() {
       }
 
       /*
-       * Insert members separately.
-       * This avoids the UPDATE/RLS problem
-       * caused by upsert.
+       * Add current user.
        */
       const firstMember =
         await sb
@@ -702,15 +1344,17 @@ export default function App() {
             "conversation_members"
           )
           .insert({
-            conversation_id: id,
-            user_id: user.id,
+            conversation_id:
+              id,
+            user_id:
+              user.id,
           });
 
       if (
         firstMember.error &&
-        !firstMember.error.message
-          .toLowerCase()
-          .includes("duplicate")
+        !isDuplicateError(
+          firstMember.error
+        )
       ) {
         setToast(
           firstMember.error.message
@@ -718,21 +1362,26 @@ export default function App() {
         return;
       }
 
+      /*
+       * Add selected member.
+       */
       const secondMember =
         await sb
           .from(
             "conversation_members"
           )
           .insert({
-            conversation_id: id,
-            user_id: member.id,
+            conversation_id:
+              id,
+            user_id:
+              member.id,
           });
 
       if (
         secondMember.error &&
-        !secondMember.error.message
-          .toLowerCase()
-          .includes("duplicate")
+        !isDuplicateError(
+          secondMember.error
+        )
       ) {
         setToast(
           secondMember.error.message
@@ -740,10 +1389,17 @@ export default function App() {
         return;
       }
 
-      setSelectedMember(member);
-      setConversationId(id);
+      await loadPrivateMessages(
+        id
+      );
 
-      await loadPrivateMessages(id);
+      setSelectedMember(
+        member
+      );
+
+      setConversationId(
+        id
+      );
 
       setToast(
         `Private chat with ${
@@ -752,7 +1408,9 @@ export default function App() {
         } opened`
       );
     } finally {
-      setPrivateLoading(false);
+      setPrivateLoading(
+        false
+      );
     }
   }
 
@@ -762,60 +1420,91 @@ export default function App() {
   async function loadPrivateMessages(
     id: string
   ) {
-    setPrivateLoading(true);
-
     const { data, error } =
       await sb
-        .from("private_messages")
+        .from(
+          "private_messages"
+        )
         .select(
-          "id,conversation_id,sender_id,content,created_at,read_at,file_path,file_name"
+          "id,conversation_id,sender_id,content,created_at,read_at,file_path,file_name,file_size,mime_type"
         )
         .eq(
           "conversation_id",
           id
         )
-        .order("created_at", {
-          ascending: true,
-        })
+        .order(
+          "created_at",
+          {
+            ascending: true,
+          }
+        )
         .limit(200);
 
     if (error) {
       setToast(
         error.message
       );
-      setPrivateLoading(false);
       return;
     }
 
-    setPrivateMessages(
-      data || []
-    );
-
-    setPrivateLoading(false);
+    const loaded =
+      (data ||
+        []) as PrivateMessage[];
 
     /*
-     * Mark incoming messages as read.
+     * Mark unread incoming messages as read.
      */
     if (user) {
-      await sb
-        .from("private_messages")
-        .update({
-          read_at:
-            new Date().toISOString(),
-        })
-        .eq(
-          "conversation_id",
-          id
-        )
-        .neq(
-          "sender_id",
-          user.id
-        )
-        .is(
-          "read_at",
-          null
-        );
+      const unreadIds =
+        loaded
+          .filter(
+            (message) =>
+              message.sender_id !==
+                user.id &&
+              !message.read_at
+          )
+          .map(
+            (message) =>
+              message.id
+          );
+
+      if (
+        unreadIds.length
+      ) {
+        const readAt =
+          new Date().toISOString();
+
+        await sb
+          .from(
+            "private_messages"
+          )
+          .update({
+            read_at:
+              readAt,
+          })
+          .in(
+            "id",
+            unreadIds
+          );
+
+        for (
+          const message of loaded
+        ) {
+          if (
+            unreadIds.includes(
+              message.id
+            )
+          ) {
+            message.read_at =
+              readAt;
+          }
+        }
+      }
     }
+
+    setPrivateMessages(
+      loaded
+    );
   }
 
   /*
@@ -868,22 +1557,23 @@ export default function App() {
             );
 
             /*
-             * Automatically mark incoming
-             * messages read while this chat
-             * is open.
+             * Mark incoming message as read.
              */
             if (
               incoming.sender_id !==
                 user.id &&
               !incoming.read_at
             ) {
+              const readAt =
+                new Date().toISOString();
+
               await sb
                 .from(
                   "private_messages"
                 )
                 .update({
                   read_at:
-                    new Date().toISOString(),
+                    readAt,
                 })
                 .eq(
                   "id",
@@ -917,11 +1607,12 @@ export default function App() {
 
             setPrivateMessages(
               (old) =>
-                old.map((m) =>
-                  m.id ===
-                  updated.id
-                    ? updated
-                    : m
+                old.map(
+                  (message) =>
+                    message.id ===
+                    updated.id
+                      ? updated
+                      : message
                 )
             );
           }
@@ -943,8 +1634,8 @@ export default function App() {
             setPrivateMessages(
               (old) =>
                 old.filter(
-                  (m) =>
-                    m.id !==
+                  (message) =>
+                    message.id !==
                     deleted.id
                 )
             );
@@ -991,14 +1682,35 @@ export default function App() {
       return;
     }
 
+    if (
+      privateFile &&
+      privateFile.size >
+        25 * 1024 * 1024
+    ) {
+      setToast(
+        "Private files must be 25 MB or smaller."
+      );
+      return;
+    }
+
     setSending(true);
 
     try {
-      let filePath =
-        null;
+      let filePath:
+        | string
+        | null = null;
 
-      let fileName =
-        null;
+      let fileName:
+        | string
+        | null = null;
+
+      let fileSize:
+        | number
+        | null = null;
+
+      let mimeType:
+        | string
+        | null = null;
 
       if (privateFile) {
         const safeName =
@@ -1020,7 +1732,9 @@ export default function App() {
               privateFile
             );
 
-        if (upload.error) {
+        if (
+          upload.error
+        ) {
           setToast(
             upload.error.message
           );
@@ -1029,6 +1743,13 @@ export default function App() {
 
         fileName =
           privateFile.name;
+
+        fileSize =
+          privateFile.size;
+
+        mimeType =
+          privateFile.type ||
+          "application/octet-stream";
       }
 
       const { error } =
@@ -1048,9 +1769,27 @@ export default function App() {
               filePath,
             file_name:
               fileName,
+            file_size:
+              fileSize,
+            mime_type:
+              mimeType,
           });
 
       if (error) {
+        /*
+         * If database insertion failed after
+         * file upload, try to remove the file.
+         */
+        if (filePath) {
+          await sb.storage
+            .from(
+              "gosnaps-private-files"
+            )
+            .remove([
+              filePath,
+            ]);
+        }
+
         setToast(
           error.message
         );
@@ -1079,9 +1818,14 @@ export default function App() {
 
     const { error } =
       await sb
-        .from("private_messages")
+        .from(
+          "private_messages"
+        )
         .delete()
-        .eq("id", id)
+        .eq(
+          "id",
+          id
+        )
         .eq(
           "sender_id",
           user.id
@@ -1103,6 +1847,15 @@ export default function App() {
           filePath,
         ]);
     }
+
+    setPrivateMessages(
+      (old) =>
+        old.filter(
+          (message) =>
+            message.id !==
+            id
+        )
+    );
 
     setToast(
       "Message deleted."
@@ -1225,9 +1978,12 @@ export default function App() {
       return;
     }
 
-    if (callingMember) {
+    if (
+      callingMember ||
+      callRef.current
+    ) {
       setToast(
-        "A call is already being started."
+        "You already have a call in progress."
       );
       return;
     }
@@ -1236,11 +1992,57 @@ export default function App() {
       member.id
     );
 
-    const room =
-      crypto.randomUUID();
+    try {
+      /*
+       * Prevent duplicate outgoing invitations.
+       */
+      const { data: activeCall } =
+        await sb
+          .from(
+            "call_invitations"
+          )
+          .select(
+            "id,status,expires_at"
+          )
+          .eq(
+            "caller_id",
+            user.id
+          )
+          .in(
+            "status",
+            [
+              "ringing",
+              "accepted",
+            ]
+          )
+          .limit(1)
+          .maybeSingle();
 
-    const { error } =
-      await sb
+      if (
+        activeCall
+      ) {
+        setCallingMember(
+          null
+        );
+        setToast(
+          "You already have an active call."
+        );
+        return;
+      }
+
+      const room =
+        crypto.randomUUID();
+
+      const expiresAt =
+        new Date(
+          Date.now() +
+            60_000
+        ).toISOString();
+
+      const {
+        data: invitation,
+        error,
+      } = await sb
         .from(
           "call_invitations"
         )
@@ -1254,30 +2056,222 @@ export default function App() {
           video,
           status:
             "ringing",
-        });
+          expires_at:
+            expiresAt,
+        })
+        .select(
+          "id"
+        )
+        .single();
 
-    if (error) {
-      setCallingMember(null);
+      if (
+        error ||
+        !invitation
+      ) {
+        setCallingMember(
+          null
+        );
+
+        setToast(
+          error?.message ||
+            "Could not start the call."
+        );
+
+        return;
+      }
+
       setToast(
-        error.message
+        `Calling ${
+          member.display_name ||
+          "member"
+        }...`
+      );
+
+      /*
+       * If nobody accepts within 60 seconds,
+       * cancel the outgoing invitation.
+       */
+      window.setTimeout(
+        async () => {
+          if (
+            callRef.current
+          ) {
+            return;
+          }
+
+          const { data } =
+            await sb
+              .from(
+                "call_invitations"
+              )
+              .select(
+                "status"
+              )
+              .eq(
+                "id",
+                invitation.id
+              )
+              .maybeSingle();
+
+          if (
+            data?.status ===
+            "ringing"
+          ) {
+            await sb
+              .from(
+                "call_invitations"
+              )
+              .update({
+                status:
+                  "expired",
+                ended_at:
+                  new Date().toISOString(),
+              })
+              .eq(
+                "id",
+                invitation.id
+              )
+              .eq(
+                "status",
+                "ringing"
+              );
+
+            setCallingMember(
+              null
+            );
+
+            setToast(
+              "No answer. Call invitation expired."
+            );
+          }
+        },
+        60_500
+      );
+    } catch (error: any) {
+      setCallingMember(
+        null
+      );
+
+      setToast(
+        error?.message ||
+          "Could not start the call."
+      );
+    }
+  }
+
+  /*
+   * ACCEPT CALL
+   */
+  async function acceptCall() {
+    if (
+      !incomingCall ||
+      !user
+    ) {
+      return;
+    }
+
+    if (
+      callRef.current
+    ) {
+      setToast(
+        "You are already on a call."
       );
       return;
     }
 
-    setToast(
-      `Calling ${
-        member.display_name ||
-        "member"
-      }...`
-    );
-  }
-
-  async function acceptCall() {
-    if (!incomingCall)
-      return;
-
     const accepted =
       incomingCall;
+
+    /*
+     * Verify the invitation is still valid.
+     */
+    const {
+      data: invitation,
+      error: fetchError,
+    } = await sb
+      .from(
+        "call_invitations"
+      )
+      .select(
+        "id,caller_id,receiver_id,room_id,video,status,expires_at"
+      )
+      .eq(
+        "id",
+        accepted.id
+      )
+      .eq(
+        "receiver_id",
+        user.id
+      )
+      .maybeSingle();
+
+    if (
+      fetchError ||
+      !invitation
+    ) {
+      setIncomingCall(
+        null
+      );
+
+      setToast(
+        fetchError?.message ||
+          "This call is no longer available."
+      );
+
+      return;
+    }
+
+    if (
+      invitation.status !==
+      "ringing"
+    ) {
+      setIncomingCall(
+        null
+      );
+
+      setToast(
+        "This call is no longer ringing."
+      );
+
+      return;
+    }
+
+    if (
+      invitation.expires_at &&
+      new Date(
+        invitation.expires_at
+      ).getTime() <=
+        Date.now()
+    ) {
+      await sb
+        .from(
+          "call_invitations"
+        )
+        .update({
+          status:
+            "expired",
+          ended_at:
+            new Date().toISOString(),
+        })
+        .eq(
+          "id",
+          accepted.id
+        )
+        .eq(
+          "status",
+          "ringing"
+        );
+
+      setIncomingCall(
+        null
+      );
+
+      setToast(
+        "This call invitation has expired."
+      );
+
+      return;
+    }
 
     const { error } =
       await sb
@@ -1287,10 +2281,20 @@ export default function App() {
         .update({
           status:
             "accepted",
+          answered_at:
+            new Date().toISOString(),
         })
         .eq(
           "id",
           accepted.id
+        )
+        .eq(
+          "receiver_id",
+          user.id
+        )
+        .eq(
+          "status",
+          "ringing"
         );
 
     if (error) {
@@ -1300,14 +2304,19 @@ export default function App() {
       return;
     }
 
-    setIncomingCall(null);
+    setIncomingCall(
+      null
+    );
 
     setCall({
       room:
         accepted.room_id,
       video:
         accepted.video,
-      initiator: false,
+      initiator:
+        false,
+      invitationId:
+        accepted.id,
     });
 
     setToast(
@@ -1315,9 +2324,19 @@ export default function App() {
     );
   }
 
+  /*
+   * REJECT CALL
+   */
   async function rejectCall() {
-    if (!incomingCall)
+    if (
+      !incomingCall ||
+      !user
+    ) {
       return;
+    }
+
+    const rejected =
+      incomingCall;
 
     const { error } =
       await sb
@@ -1327,10 +2346,20 @@ export default function App() {
         .update({
           status:
             "rejected",
+          ended_at:
+            new Date().toISOString(),
         })
         .eq(
           "id",
-          incomingCall.id
+          rejected.id
+        )
+        .eq(
+          "receiver_id",
+          user.id
+        )
+        .eq(
+          "status",
+          "ringing"
         );
 
     if (error) {
@@ -1340,7 +2369,9 @@ export default function App() {
       return;
     }
 
-    setIncomingCall(null);
+    setIncomingCall(
+      null
+    );
 
     setToast(
       "Call declined."
@@ -1471,7 +2502,8 @@ export default function App() {
               },
               body:
                 JSON.stringify({
-                  message: q,
+                  message:
+                    q,
                 }),
             }
           );
@@ -1484,7 +2516,7 @@ export default function App() {
             ...old,
             {
               id:
-                Date.now(),
+                `ai-${Date.now()}`,
               sender:
                 "Academic Hunters AI",
               text:
@@ -1527,14 +2559,27 @@ export default function App() {
       return;
     }
 
+    if (
+      file &&
+      file.size >
+        25 * 1024 * 1024
+    ) {
+      setToast(
+        "Files must be 25 MB or smaller."
+      );
+      return;
+    }
+
     setSending(true);
 
     try {
-      let attachmentPath =
-        null;
+      let attachmentPath:
+        | string
+        | null = null;
 
-      let attachmentName =
-        null;
+      let attachmentName:
+        | string
+        | null = null;
 
       if (file) {
         const safeName =
@@ -1556,7 +2601,9 @@ export default function App() {
               file
             );
 
-        if (upload.error) {
+        if (
+          upload.error
+        ) {
           setToast(
             upload.error.message
           );
@@ -1579,6 +2626,7 @@ export default function App() {
             receiver_id:
               null,
             sender:
+              myProfile?.display_name ||
               user.email ||
               "Academic Hunters Member",
             content:
@@ -1601,7 +2649,21 @@ export default function App() {
                 : null,
           });
 
-      if (result.error) {
+      if (
+        result.error
+      ) {
+        if (
+          attachmentPath
+        ) {
+          await sb.storage
+            .from(
+              "gosnaps-files"
+            )
+            .remove([
+              attachmentPath,
+            ]);
+        }
+
         setToast(
           result.error.message
         );
@@ -1619,21 +2681,78 @@ export default function App() {
     }
   }
 
+  /*
+   * CLOSE PRIVATE CHAT
+   */
   function closePrivateChat() {
-    setSelectedMember(null);
-    setConversationId(null);
-    setPrivateMessages([]);
+    setSelectedMember(
+      null
+    );
+
+    setConversationId(
+      null
+    );
+
+    setPrivateMessages(
+      []
+    );
+
     setPrivateText("");
     setPrivateFile(null);
   }
 
-  function closeCall() {
-    setCall(null);
-    setCallingMember(null);
-    setToast(
-      "Call ended."
+  /*
+   * CLOSE CALL
+   *
+   * useCallback keeps the function stable
+   * while Call.tsx is mounted.
+   */
+  const closeCall =
+    useCallback(
+      async () => {
+        const currentCall =
+          callRef.current;
+
+        setCall(null);
+        setCallingMember(
+          null
+        );
+
+        if (
+          currentCall?.invitationId
+        ) {
+          const now =
+            new Date().toISOString();
+
+          await sb
+            .from(
+              "call_invitations"
+            )
+            .update({
+              status:
+                "ended",
+              ended_at:
+                now,
+            })
+            .eq(
+              "id",
+              currentCall.invitationId
+            )
+            .in(
+              "status",
+              [
+                "ringing",
+                "accepted",
+              ]
+            );
+        }
+
+        setToast(
+          "Call ended."
+        );
+      },
+      [sb]
     );
-  }
 
   const filteredMembers =
     members.filter(
@@ -1661,7 +2780,6 @@ export default function App() {
 
   return (
     <main className="wrap">
-
       {/* HEADER */}
       <header>
         <div className="logo">
@@ -1706,6 +2824,7 @@ export default function App() {
             }
             placeholder="Email address"
             type="email"
+            autoComplete="email"
           />
 
           <button
@@ -1818,6 +2937,7 @@ export default function App() {
                   )
                 }
                 placeholder="Your display name"
+                maxLength={60}
                 style={{
                   width:
                     "100%",
@@ -1864,6 +2984,18 @@ export default function App() {
                 ? "Saving..."
                 : "Save Profile"}
             </button>
+
+            <button
+              type="button"
+              onClick={
+                enableNotifications
+              }
+            >
+              {notificationPermission ===
+              "granted"
+                ? "🔔 Notifications On"
+                : "🔔 Enable Notifications"}
+            </button>
           </div>
         </section>
       )}
@@ -1905,10 +3037,10 @@ export default function App() {
               return;
             }
 
-            loadMembers();
+            void loadMembers();
 
             setToast(
-              "Choose a member to call."
+              "Choose a member for a voice call."
             );
           }}
         >
@@ -1924,10 +3056,10 @@ export default function App() {
               return;
             }
 
-            loadMembers();
+            void loadMembers();
 
             setToast(
-              "Choose a member to call."
+              "Choose a member for a video call."
             );
           }}
         >
@@ -1935,8 +3067,8 @@ export default function App() {
         </button>
 
         <button
-          onClick={
-            loadMembers
+          onClick={() =>
+            void loadMembers()
           }
         >
           👥 Members
@@ -1957,7 +3089,25 @@ export default function App() {
 
       {/* INCOMING CALL */}
       {incomingCall && (
-        <div className="incoming-call">
+        <div
+          className="incoming-call"
+          style={{
+            position:
+              "fixed",
+            left: "12px",
+            right: "12px",
+            bottom: "18px",
+            zIndex: 9998,
+            padding:
+              "16px",
+            borderRadius:
+              "16px",
+            background:
+              "rgba(20,20,20,.98)",
+            boxShadow:
+              "0 12px 40px rgba(0,0,0,.35)",
+          }}
+        >
           <h3>
             {incomingCall.video
               ? "🎥 Incoming video call"
@@ -1985,8 +3135,8 @@ export default function App() {
           >
             <button
               type="button"
-              onClick={
-                acceptCall
+              onClick={() =>
+                void acceptCall()
               }
             >
               ✅ Accept
@@ -1994,8 +3144,8 @@ export default function App() {
 
             <button
               type="button"
-              onClick={
-                rejectCall
+              onClick={() =>
+                void rejectCall()
               }
             >
               ❌ Decline
@@ -2105,7 +3255,24 @@ export default function App() {
                         }}
                       />
                     ) : (
-                      <div>
+                      <div
+                        style={{
+                          width:
+                            "42px",
+                          height:
+                            "42px",
+                          borderRadius:
+                            "50%",
+                          display:
+                            "flex",
+                          alignItems:
+                            "center",
+                          justifyContent:
+                            "center",
+                          background:
+                            "rgba(255,255,255,.12)",
+                        }}
+                      >
                         👤
                       </div>
                     )}
@@ -2161,7 +3328,7 @@ export default function App() {
                         privateLoading
                       }
                       onClick={() =>
-                        openPrivateChat(
+                        void openPrivateChat(
                           m
                         )
                       }
@@ -2172,11 +3339,15 @@ export default function App() {
                     <button
                       type="button"
                       disabled={
-                        callingMember ===
-                        m.id
+                        Boolean(
+                          callingMember
+                        ) ||
+                        Boolean(
+                          call
+                        )
                       }
                       onClick={() =>
-                        startMemberCall(
+                        void startMemberCall(
                           m,
                           false
                         )
@@ -2191,11 +3362,15 @@ export default function App() {
                     <button
                       type="button"
                       disabled={
-                        callingMember ===
-                        m.id
+                        Boolean(
+                          callingMember
+                        ) ||
+                        Boolean(
+                          call
+                        )
                       }
                       onClick={() =>
-                        startMemberCall(
+                        void startMemberCall(
                           m,
                           true
                         )
@@ -2275,6 +3450,18 @@ export default function App() {
                     />
                   )}
 
+                  <span
+                    style={{
+                      color:
+                        onlineUsers[
+                          selectedMember.id
+                        ]
+                          ? "#31d158"
+                          : "#999",
+                    }}
+                  >
+                    ●
+                  </span>{" "}
                   {
                     selectedMember.display_name ||
                     "Academic Hunters member"
@@ -2356,7 +3543,7 @@ export default function App() {
                           <button
                             type="button"
                             onClick={() =>
-                              deletePrivateMessage(
+                              void deletePrivateMessage(
                                 m.id,
                                 m.file_path
                               )
@@ -2375,6 +3562,8 @@ export default function App() {
                         style={{
                           whiteSpace:
                             "pre-wrap",
+                          overflowWrap:
+                            "anywhere",
                         }}
                       >
                         {
@@ -2398,7 +3587,7 @@ export default function App() {
                           <button
                             type="button"
                             onClick={() =>
-                              openPrivateFile(
+                              void openPrivateFile(
                                 m.file_path!
                               )
                             }
@@ -2412,7 +3601,7 @@ export default function App() {
                           <button
                             type="button"
                             onClick={() =>
-                              downloadPrivateFile(
+                              void downloadPrivateFile(
                                 m.file_path!,
                                 m.file_name ||
                                   "file"
@@ -2458,6 +3647,8 @@ export default function App() {
                     "8px",
                   background:
                     "rgba(255,255,255,.08)",
+                  overflowWrap:
+                    "anywhere",
                 }}
               >
                 📎{" "}
@@ -2494,7 +3685,12 @@ export default function App() {
                   "center",
               }}
             >
-              <label>
+              <label
+                style={{
+                  cursor:
+                    "pointer",
+                }}
+              >
                 📎
                 <input
                   type="file"
@@ -2536,20 +3732,24 @@ export default function App() {
                     !sending
                   ) {
                     e.preventDefault();
-                    sendPrivateMessage();
+
+                    void sendPrivateMessage();
                   }
                 }}
                 placeholder="Write a private message..."
+                maxLength={5000}
                 style={{
                   flex:
                     1,
+                  minWidth:
+                    0,
                 }}
               />
 
               <button
                 type="button"
-                onClick={
-                  sendPrivateMessage
+                onClick={() =>
+                  void sendPrivateMessage()
                 }
                 disabled={
                   sending
@@ -2599,7 +3799,14 @@ export default function App() {
                     "Member"}
                 </b>
 
-                <p>
+                <p
+                  style={{
+                    whiteSpace:
+                      "pre-wrap",
+                    overflowWrap:
+                      "anywhere",
+                  }}
+                >
                   {m.text ||
                     m.content ||
                     ""}
@@ -2621,7 +3828,7 @@ export default function App() {
                     <button
                       type="button"
                       onClick={() =>
-                        openFile(
+                        void openFile(
                           attachmentPath
                         )
                       }
@@ -2635,7 +3842,7 @@ export default function App() {
                     <button
                       type="button"
                       onClick={() =>
-                        downloadFile(
+                        void downloadFile(
                           attachmentPath,
                           attachmentName
                         )
@@ -2663,6 +3870,39 @@ export default function App() {
           }
         )}
       </section>
+
+      {/* PUBLIC FILE PREVIEW */}
+      {file && (
+        <div
+          style={{
+            padding:
+              "8px",
+            marginTop:
+              "8px",
+            borderRadius:
+              "8px",
+            background:
+              "rgba(255,255,255,.08)",
+            overflowWrap:
+              "anywhere",
+          }}
+        >
+          📎 {file.name}
+
+          <button
+            type="button"
+            onClick={() =>
+              setFile(null)
+            }
+            style={{
+              marginLeft:
+                "8px",
+            }}
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {/* PUBLIC COMPOSER */}
       <div className="composer">
@@ -2692,9 +3932,11 @@ export default function App() {
             if (
               e.key ===
                 "Enter" &&
+              !e.shiftKey &&
               !sending
             ) {
-              send();
+              e.preventDefault();
+              void send();
             }
           }}
           placeholder={
@@ -2702,10 +3944,13 @@ export default function App() {
               ? "Ask Academic Hunters AI…"
               : "Message Academic Hunters…"
           }
+          maxLength={5000}
         />
 
         <button
-          onClick={send}
+          onClick={() =>
+            void send()
+          }
           disabled={
             sending
           }
@@ -2727,6 +3972,9 @@ export default function App() {
           }
           initiator={
             call.initiator
+          }
+          invitationId={
+            call.invitationId
           }
           onClose={
             closeCall
