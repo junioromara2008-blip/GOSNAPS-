@@ -18,20 +18,16 @@ export default function Call({
 }: CallProps) {
   const sb = useRef(getSupabase()).current;
 
-  const pc = useRef<RTCPeerConnection | null>(
-    null
-  );
-
+  const pc = useRef<RTCPeerConnection | null>(null);
   const channel = useRef<any>(null);
+  const localStream =
+    useRef<MediaStream | null>(null);
 
   const localVideo =
     useRef<HTMLVideoElement>(null);
 
   const remoteVideo =
     useRef<HTMLVideoElement>(null);
-
-  const localStream =
-    useRef<MediaStream | null>(null);
 
   const [status, setStatus] =
     useState("Starting call…");
@@ -101,7 +97,9 @@ export default function Call({
         };
 
         channel.current =
-          sb.channel(`call:${room}`);
+          sb.channel(
+            `call-room:${room}`
+          );
 
         connection.onicecandidate = (
           event
@@ -150,7 +148,11 @@ export default function Call({
               setStatus(
                 "Connected"
               );
-            } catch {
+            } catch (error) {
+              console.error(
+                error
+              );
+
               setStatus(
                 "Could not answer the call."
               );
@@ -176,7 +178,11 @@ export default function Call({
               setStatus(
                 "Connected"
               );
-            } catch {
+            } catch (error) {
+              console.error(
+                error
+              );
+
               setStatus(
                 "Connection failed."
               );
@@ -205,7 +211,8 @@ export default function Call({
         channel.current.subscribe(
           async (state: string) => {
             if (
-              state !== "SUBSCRIBED"
+              state !==
+              "SUBSCRIBED"
             ) {
               return;
             }
