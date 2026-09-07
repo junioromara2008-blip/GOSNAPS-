@@ -476,10 +476,13 @@ export default function App() {
         </button>
 
         <button
-          onClick={loadMembers}
-        >
-          👥 Members
-        </button>
+  onClick={() => {
+    setToast("Members button clicked");
+    loadMembers();
+  }}
+>
+  👥 Members
+</button>
       </nav>
 
       {toast && (
