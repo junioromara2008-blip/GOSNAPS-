@@ -347,4 +347,73 @@ export default function App() {
         </div>
       )}
 
-      {members.length > 
+            {members.length > 0 && (
+        <aside className="members">
+          {members.map((m) => (
+            <div key={m.id}>
+              🟢 {m.display_name || "GOSNAPS member"}
+            </div>
+          ))}
+        </aside>
+      )}
+
+      <section className="chat">
+        {messages.map((m, i) => (
+          <article
+            className={
+              m.sender === "GOSNAPS AI" ? "msg ai" : "msg"
+            }
+            key={m.id ?? i}
+          >
+            <b>{m.sender || "Member"}</b>
+            <p>{m.text || m.content || ""}</p>
+
+            {m.attachment && (
+              <small>
+                📎{" "}
+                {typeof m.attachment === "object"
+                  ? m.attachment.name
+                  : m.attachment}
+              </small>
+            )}
+          </article>
+        ))}
+      </section>
+
+      <div className="composer">
+        <label>
+          📎
+          <input
+            type="file"
+            onChange={(e) =>
+              setFile(e.target.files?.[0] || null)
+            }
+          />
+        </label>
+
+        <input
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !sending) send();
+          }}
+          placeholder={
+            ai ? "Ask GOSNAPS AI…" : "Message GOSNAPS…"
+          }
+        />
+
+        <button onClick={send} disabled={sending}>
+          {sending ? "Sending..." : "Send"}
+        </button>
+      </div>
+
+      {call && (
+        <Call
+          room={call.room}
+          video={call.video}
+          onClose={() => setCall(null)}
+        />
+      )}
+    </main>
+  );
+          }
