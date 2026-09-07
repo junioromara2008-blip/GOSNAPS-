@@ -136,7 +136,6 @@ export default function App() {
   setMembers(data);
   setToast(`${data.length} member(s) found`);
     }
-    }
   }
 
   async function openFile(path: string) {
