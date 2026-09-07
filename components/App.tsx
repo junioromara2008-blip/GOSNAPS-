@@ -41,7 +41,9 @@ export default function App() {
         },
         (payload) => {
           setMessages((old) => {
-            const exists = old.some((m) => m.id === payload.new.id);
+            const exists = old.some(
+              (m) => m.id === payload.new.id
+            );
             return exists ? old : [...old, payload.new];
           });
         }
@@ -147,7 +149,7 @@ export default function App() {
           ...old,
           {
             id: Date.now(),
-            sender: "GOSNAPS AI",
+            sender: "Academic Hunters AI",
             text:
               d.reply ||
               d.error ||
@@ -197,17 +199,10 @@ export default function App() {
         attachmentPath = path;
       }
 
-      /*
-       * IMPORTANT:
-       * Do NOT provide "id" here.
-       *
-       * messages.id is BIGINT, so PostgreSQL
-       * should generate it automatically.
-       */
       const message = {
         sender_id: user.id,
         receiver_id: null,
-        sender: user.email || "Member",
+        sender: user.email || "Academic Hunters Member",
         content: messageText || "📎 File",
         text: messageText || "📎 File",
         file_url: attachmentPath,
@@ -258,7 +253,7 @@ export default function App() {
     <main className="wrap">
       <header>
         <div className="logo">
-          GO<span>SNAPS</span>
+          ACADEMIC <span>HUNTERS</span>
         </div>
 
         <div className="live">
@@ -272,7 +267,7 @@ export default function App() {
         </small>
 
         <h1>
-          One place for your people.
+          Welcome to Academic Hunters.
         </h1>
 
         <p>
@@ -318,7 +313,7 @@ export default function App() {
           className={ai ? "active" : ""}
           onClick={() => setAi(true)}
         >
-          ✨ AI
+          ✨ Academic Hunters AI
         </button>
 
         <button
@@ -347,11 +342,13 @@ export default function App() {
         </div>
       )}
 
-            {members.length > 0 && (
+      {members.length > 0 && (
         <aside className="members">
           {members.map((m) => (
             <div key={m.id}>
-              🟢 {m.display_name || "GOSNAPS member"}
+              🟢{" "}
+              {m.display_name ||
+                "Academic Hunters member"}
             </div>
           ))}
         </aside>
@@ -361,7 +358,9 @@ export default function App() {
         {messages.map((m, i) => (
           <article
             className={
-              m.sender === "GOSNAPS AI" ? "msg ai" : "msg"
+              m.sender === "Academic Hunters AI"
+                ? "msg ai"
+                : "msg"
             }
             key={m.id ?? i}
           >
@@ -386,23 +385,37 @@ export default function App() {
           <input
             type="file"
             onChange={(e) =>
-              setFile(e.target.files?.[0] || null)
+              setFile(
+                e.target.files?.[0] || null
+              )
             }
           />
         </label>
 
         <input
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) =>
+            setText(e.target.value)
+          }
           onKeyDown={(e) => {
-            if (e.key === "Enter" && !sending) send();
+            if (
+              e.key === "Enter" &&
+              !sending
+            ) {
+              send();
+            }
           }}
           placeholder={
-            ai ? "Ask GOSNAPS AI…" : "Message GOSNAPS…"
+            ai
+              ? "Ask Academic Hunters AI…"
+              : "Message Academic Hunters…"
           }
         />
 
-        <button onClick={send} disabled={sending}>
+        <button
+          onClick={send}
+          disabled={sending}
+        >
           {sending ? "Sending..." : "Send"}
         </button>
       </div>
@@ -416,4 +429,4 @@ export default function App() {
       )}
     </main>
   );
-          }
+}
