@@ -9,6 +9,13 @@ import {
 import { getSupabase } from "@/lib/supabase";
 import Call from "./Call";
 
+type Section =
+  | "home"
+  | "messages"
+  | "ai"
+  | "members"
+  | "profile";
+
 type CallState = {
   room: string;
   video: boolean;
@@ -60,32 +67,35 @@ function isDuplicateError(error: any) {
 export default function App() {
   const sb = useRef(getSupabase()).current;
 
-  const [user, setUser] = useState<any>(null);
-  const [email, setEmail] = useState("");
+  const [section, setSection] =
+    useState<Section>("home");
 
-  const [members, setMembers] = useState<Member[]>(
-    []
-  );
+  const [user, setUser] =
+    useState<any>(null);
+
+  const [email, setEmail] =
+    useState("");
+
+  const [members, setMembers] =
+    useState<Member[]>([]);
 
   const [memberSearch, setMemberSearch] =
     useState("");
 
-  const [messages, setMessages] = useState<any[]>(
-    []
-  );
+  const [messages, setMessages] =
+    useState<any[]>([]);
 
   const [privateMessages, setPrivateMessages] =
     useState<PrivateMessage[]>([]);
 
-  const [text, setText] = useState("");
+  const [text, setText] =
+    useState("");
+
   const [privateText, setPrivateText] =
     useState("");
 
-  const [ai, setAi] = useState(false);
-
-  const [file, setFile] = useState<File | null>(
-    null
-  );
+  const [file, setFile] =
+    useState<File | null>(null);
 
   const [privateFile, setPrivateFile] =
     useState<File | null>(null);
@@ -93,19 +103,23 @@ export default function App() {
   const [call, setCall] =
     useState<CallState | null>(null);
 
-  const callRef = useRef<CallState | null>(null);
+  const callRef =
+    useRef<CallState | null>(null);
 
   const [incomingCall, setIncomingCall] =
     useState<IncomingCall | null>(null);
 
-  const [toast, setToast] = useState("");
+  const [toast, setToast] =
+    useState("");
 
-  const [online, setOnline] = useState(0);
+  const [online, setOnline] =
+    useState(0);
 
   const [onlineUsers, setOnlineUsers] =
     useState<Record<string, boolean>>({});
 
-  const [sending, setSending] = useState(false);
+  const [sending, setSending] =
+    useState(false);
 
   const [callingMember, setCallingMember] =
     useState<string | null>(null);
@@ -131,20 +145,19 @@ export default function App() {
   const [savingProfile, setSavingProfile] =
     useState(false);
 
-  const [notificationPermission, setNotificationPermission] =
-    useState<NotificationPermission | "unsupported">(
-      "default"
-    );
+  const [
+    notificationPermission,
+    setNotificationPermission,
+  ] = useState<
+    NotificationPermission | "unsupported"
+  >("default");
 
-  /*
-   * Keep a ref of the active call.
-   */
   useEffect(() => {
     callRef.current = call;
   }, [call]);
 
   /*
-   * Browser notification helper.
+   * BROWSER NOTIFICATIONS
    */
   const notifyBrowser = useCallback(
     (
@@ -168,16 +181,11 @@ export default function App() {
             icon: "/favicon.ico",
           });
         }
-      } catch {
-        // Browser notifications are optional.
-      }
+      } catch {}
     },
     []
   );
 
-  /*
-   * Check notification support.
-   */
   useEffect(() => {
     if (
       typeof window !== "undefined" &&
@@ -193,9 +201,6 @@ export default function App() {
     }
   }, []);
 
-  /*
-   * Enable browser notifications.
-   */
   async function enableNotifications() {
     if (
       typeof window === "undefined" ||
@@ -267,7 +272,137 @@ export default function App() {
   }, [sb]);
 
   /*
-   * PUBLIC CHAT + PRESENCE + CALLS
+   * LOAD OWN PROFILE
+   */
+  useEffect(() => {
+    if (!user) {
+      setMyProfile(null);
+      setDisplayName("");
+      return;
+    }
+
+    void loadMyProfile();
+  }, [user]);
+
+  async function loadMyProfile() {
+    if (!user) return;
+
+    const { data, error } =
+      await sb
+        .from("profiles")
+        .select(
+          "id,display_name,avatar_path,created_at"
+        )
+        .eq("id", user.id)
+        .maybeSingle();
+
+    if (error) return;
+
+    if (data) {
+      let avatarUrl:
+        | string
+        | null = null;
+
+      if (data.avatar_path) {
+        const result =
+          await sb.storage
+            .from("gosnaps-avatars")
+            .createSignedUrl(
+              data.avatar_path,
+              3600
+            );
+
+        avatarUrl =
+          result.data?.signedUrl ||
+          null;
+      }
+
+      const profile: Member = {
+        ...data,
+        avatar_url: avatarUrl,
+      };
+
+      setMyProfile(profile);
+      setDisplayName(
+        data.display_name || ""
+      );
+    } else {
+      const fallbackName =
+        user.user_metadata
+          ?.display_name ||
+        user.email?.split("@")[0] ||
+        "Academic Hunters member";
+
+      const created =
+        await sb
+          .from("profiles")
+          .insert({
+            id: user.id,
+            display_name: fallbackName,
+          });
+
+      if (!created.error) {
+        setDisplayName(
+          fallbackName
+        );
+
+        await loadMyProfile();
+      }
+    }
+  }
+
+  /*
+   * MEMBERS
+   */
+  async function loadMembers() {
+    const { data, error } =
+      await sb
+        .from("profiles")
+        .select(
+          "id,display_name,avatar_path,created_at"
+        )
+        .limit(100);
+
+    if (error) {
+      setToast(error.message);
+      return;
+    }
+
+    const enriched: Member[] = [];
+
+    for (
+      const member of data || []
+    ) {
+      let avatarUrl:
+        | string
+        | null = null;
+
+      if (member.avatar_path) {
+        const result =
+          await sb.storage
+            .from("gosnaps-avatars")
+            .createSignedUrl(
+              member.avatar_path,
+              3600
+            );
+
+        avatarUrl =
+          result.data?.signedUrl ||
+          null;
+      }
+
+      enriched.push({
+        ...member,
+        avatar_url: avatarUrl,
+      });
+    }
+
+    setMembers(enriched);
+  }
+
+  /*
+   * PUBLIC CHAT / PRESENCE / CALLS /
+   * NOTIFICATIONS
    */
   useEffect(() => {
     if (!user) {
@@ -279,9 +414,6 @@ export default function App() {
 
     let mounted = true;
 
-    /*
-     * PUBLIC MESSAGES
-     */
     const msg = sb
       .channel("gosnaps-messages")
       .on(
@@ -342,50 +474,41 @@ export default function App() {
         }
       );
 
-    const updatePresence =
-      () => {
-        const state =
-          presence.presenceState();
+    const updatePresence = () => {
+      const state =
+        presence.presenceState();
 
-        const users: Record<
-          string,
-          boolean
-        > = {};
+      const users: Record<
+        string,
+        boolean
+      > = {};
 
-        Object.keys(state).forEach(
-          (key) => {
-            users[key] = true;
-          }
-        );
+      Object.keys(state).forEach(
+        (key) => {
+          users[key] = true;
+        }
+      );
 
-        setOnlineUsers(users);
-
-        setOnline(
-          Object.keys(users)
-            .length
-        );
-      };
+      setOnlineUsers(users);
+      setOnline(
+        Object.keys(users).length
+      );
+    };
 
     presence
       .on(
         "presence",
-        {
-          event: "sync",
-        },
+        { event: "sync" },
         updatePresence
       )
       .on(
         "presence",
-        {
-          event: "join",
-        },
+        { event: "join" },
         updatePresence
       )
       .on(
         "presence",
-        {
-          event: "leave",
-        },
+        { event: "leave" },
         updatePresence
       )
       .subscribe(
@@ -395,19 +518,14 @@ export default function App() {
             "SUBSCRIBED"
           ) {
             try {
-              await presence.track(
-                {
-                  user_id:
-                    user.id,
-                  online_at:
-                    new Date().toISOString(),
-                }
-              );
+              await presence.track({
+                user_id: user.id,
+                online_at:
+                  new Date().toISOString(),
+              });
 
               updatePresence();
-            } catch {
-              // Presence is optional.
-            }
+            } catch {}
           }
         }
       );
@@ -429,16 +547,11 @@ export default function App() {
               "call_invitations",
           },
           async (payload) => {
-            if (!mounted)
-              return;
+            if (!mounted) return;
 
             const invitation =
               payload.new as any;
 
-            /*
-             * Only the receiver handles
-             * incoming calls.
-             */
             if (
               invitation.receiver_id !==
               user.id
@@ -453,9 +566,6 @@ export default function App() {
               return;
             }
 
-            /*
-             * Ignore expired invitations.
-             */
             if (
               invitation.expires_at &&
               new Date(
@@ -468,8 +578,7 @@ export default function App() {
                   "call_invitations"
                 )
                 .update({
-                  status:
-                    "expired",
+                  status: "expired",
                   ended_at:
                     new Date().toISOString(),
                 })
@@ -485,20 +594,13 @@ export default function App() {
               return;
             }
 
-            /*
-             * Do not replace an active call
-             * with another incoming call.
-             */
-            if (
-              callRef.current
-            ) {
+            if (callRef.current) {
               await sb
                 .from(
                   "call_invitations"
                 )
                 .update({
-                  status:
-                    "rejected",
+                  status: "rejected",
                   ended_at:
                     new Date().toISOString(),
                 })
@@ -537,8 +639,8 @@ export default function App() {
                 profile.display_name;
             }
 
-            const incoming: IncomingCall =
-              {
+            const incoming:
+              IncomingCall = {
                 id:
                   invitation.id,
                 caller_id:
@@ -560,24 +662,19 @@ export default function App() {
               incoming
             );
 
-            const callMessage =
-              invitation.video
-                ? "Incoming video call"
-                : "Incoming voice call";
-
             setToast(
-              `${callMessage} from ${callerName}`
+              invitation.video
+                ? `Incoming video call from ${callerName}`
+                : `Incoming voice call from ${callerName}`
             );
 
             notifyBrowser(
-              callMessage,
+              invitation.video
+                ? "Incoming video call"
+                : "Incoming voice call",
               `${callerName} is calling you.`
             );
 
-            /*
-             * Automatically expire the invitation
-             * after its expiry time.
-             */
             if (
               invitation.expires_at
             ) {
@@ -592,11 +689,8 @@ export default function App() {
 
               window.setTimeout(
                 async () => {
-                  if (
-                    !mounted
-                  ) {
+                  if (!mounted)
                     return;
-                  }
 
                   setIncomingCall(
                     (current) =>
@@ -639,15 +733,11 @@ export default function App() {
               "call_invitations",
           },
           (payload) => {
-            if (!mounted)
-              return;
+            if (!mounted) return;
 
             const invitation =
               payload.new as any;
 
-            /*
-             * Caller side.
-             */
             if (
               invitation.caller_id ===
               user.id
@@ -656,9 +746,7 @@ export default function App() {
                 invitation.status ===
                 "accepted"
               ) {
-                setCallingMember(
-                  null
-                );
+                setCallingMember(null);
 
                 setCall({
                   room:
@@ -667,8 +755,7 @@ export default function App() {
                     Boolean(
                       invitation.video
                     ),
-                  initiator:
-                    true,
+                  initiator: true,
                   invitationId:
                     invitation.id,
                 });
@@ -690,9 +777,7 @@ export default function App() {
                 invitation.status ===
                   "ended"
               ) {
-                setCallingMember(
-                  null
-                );
+                setCallingMember(null);
 
                 if (
                   callRef.current
@@ -729,9 +814,6 @@ export default function App() {
               }
             }
 
-            /*
-             * Receiver side.
-             */
             if (
               invitation.receiver_id ===
               user.id
@@ -768,11 +850,7 @@ export default function App() {
         .subscribe();
 
     /*
-     * GLOBAL PRIVATE MESSAGE NOTIFICATIONS
-     *
-     * This does not insert the message into
-     * the current chat. The current-chat channel
-     * handles that separately.
+     * PRIVATE MESSAGE NOTIFICATIONS
      */
     const privateNotifications =
       sb
@@ -788,8 +866,7 @@ export default function App() {
               "private_messages",
           },
           async (payload) => {
-            if (!mounted)
-              return;
+            if (!mounted) return;
 
             const incoming =
               payload.new as PrivateMessage;
@@ -801,10 +878,6 @@ export default function App() {
               return;
             }
 
-            /*
-             * Don't create a browser notification
-             * for the conversation currently open.
-             */
             if (
               incoming.conversation_id ===
               conversationId
@@ -853,7 +926,7 @@ export default function App() {
         .subscribe();
 
     /*
-     * NEW MEMBER NOTIFICATIONS
+     * NEW MEMBERS
      */
     const profileNotifications =
       sb
@@ -868,8 +941,7 @@ export default function App() {
             table: "profiles",
           },
           (payload) => {
-            if (!mounted)
-              return;
+            if (!mounted) return;
 
             const profile =
               payload.new as any;
@@ -894,9 +966,6 @@ export default function App() {
               `${name} joined Academic Hunters.`
             );
 
-            /*
-             * Refresh member list.
-             */
             void loadMembers();
           }
         )
@@ -906,9 +975,7 @@ export default function App() {
       mounted = false;
 
       sb.removeChannel(msg);
-      sb.removeChannel(
-        presence
-      );
+      sb.removeChannel(presence);
       sb.removeChannel(calls);
       sb.removeChannel(
         privateNotifications
@@ -925,106 +992,6 @@ export default function App() {
   ]);
 
   /*
-   * LOAD OWN PROFILE
-   */
-  useEffect(() => {
-    if (!user) {
-      setMyProfile(null);
-      setDisplayName("");
-      return;
-    }
-
-    void loadMyProfile();
-  }, [user]);
-
-  async function loadMyProfile() {
-    if (!user) return;
-
-    const { data, error } =
-      await sb
-        .from("profiles")
-        .select(
-          "id,display_name,avatar_path,created_at"
-        )
-        .eq("id", user.id)
-        .maybeSingle();
-
-    if (error) {
-      return;
-    }
-
-    if (data) {
-      let avatarUrl:
-        | string
-        | null = null;
-
-      if (
-        data.avatar_path
-      ) {
-        const result =
-          await sb.storage
-            .from(
-              "gosnaps-avatars"
-            )
-            .createSignedUrl(
-              data.avatar_path,
-              3600
-            );
-
-        avatarUrl =
-          result.data
-            ?.signedUrl ||
-          null;
-      }
-
-      const profile: Member =
-        {
-          ...data,
-          avatar_url:
-            avatarUrl,
-        };
-
-      setMyProfile(
-        profile
-      );
-
-      setDisplayName(
-        data.display_name ||
-          ""
-      );
-    } else {
-      /*
-       * Create a profile if one does not exist.
-       */
-      const fallbackName =
-        user.user_metadata
-          ?.display_name ||
-        user.email
-          ?.split("@")[0] ||
-        "Academic Hunters member";
-
-      const created =
-        await sb
-          .from("profiles")
-          .insert({
-            id: user.id,
-            display_name:
-              fallbackName,
-          });
-
-      if (
-        !created.error
-      ) {
-        setDisplayName(
-          fallbackName
-        );
-
-        await loadMyProfile();
-      }
-    }
-  }
-
-  /*
    * LOGIN
    */
   async function login() {
@@ -1037,8 +1004,7 @@ export default function App() {
 
     const { error } =
       await sb.auth.signInWithOtp({
-        email:
-          email.trim(),
+        email: email.trim(),
         options: {
           emailRedirectTo:
             "https://gosnaps.com",
@@ -1052,7 +1018,7 @@ export default function App() {
   }
 
   /*
-   * PROFILE UPDATE
+   * PROFILE
    */
   async function saveProfile() {
     if (!user) {
@@ -1102,9 +1068,7 @@ export default function App() {
 
         const upload =
           await sb.storage
-            .from(
-              "gosnaps-avatars"
-            )
+            .from("gosnaps-avatars")
             .upload(
               path,
               profileFile,
@@ -1113,9 +1077,7 @@ export default function App() {
               }
             );
 
-        if (
-          upload.error
-        ) {
+        if (upload.error) {
           setToast(
             upload.error.message
           );
@@ -1138,16 +1100,10 @@ export default function App() {
           });
 
       if (error) {
-        setToast(
-          error.message
-        );
+        setToast(error.message);
         return;
       }
 
-      /*
-       * Remove previous avatar after
-       * the new profile is saved.
-       */
       if (
         profileFile &&
         oldAvatarPath &&
@@ -1155,9 +1111,7 @@ export default function App() {
           avatarPath
       ) {
         await sb.storage
-          .from(
-            "gosnaps-avatars"
-          )
+          .from("gosnaps-avatars")
           .remove([
             oldAvatarPath,
           ]);
@@ -1177,67 +1131,7 @@ export default function App() {
   }
 
   /*
-   * MEMBERS
-   */
-  async function loadMembers() {
-    const { data, error } =
-      await sb
-        .from("profiles")
-        .select(
-          "id,display_name,avatar_path,created_at"
-        )
-        .limit(100);
-
-    if (error) {
-      setToast(
-        error.message
-      );
-      return;
-    }
-
-    const enriched: Member[] =
-      [];
-
-    for (
-      const member of data || []
-    ) {
-      let avatarUrl:
-        | string
-        | null = null;
-
-      if (
-        member.avatar_path
-      ) {
-        const result =
-          await sb.storage
-            .from(
-              "gosnaps-avatars"
-            )
-            .createSignedUrl(
-              member.avatar_path,
-              3600
-            );
-
-        avatarUrl =
-          result.data
-            ?.signedUrl ||
-          null;
-      }
-
-      enriched.push({
-        ...member,
-        avatar_url:
-          avatarUrl,
-      });
-    }
-
-    setMembers(
-      enriched
-    );
-  }
-
-  /*
-   * STABLE CONVERSATION ID
+   * PRIVATE CHAT
    */
   async function makeConversationId(
     first: string,
@@ -1277,9 +1171,6 @@ export default function App() {
     ].join("-");
   }
 
-  /*
-   * OPEN PRIVATE CHAT
-   */
   async function openPrivateChat(
     member: Member
   ) {
@@ -1300,9 +1191,7 @@ export default function App() {
       return;
     }
 
-    setPrivateLoading(
-      true
-    );
+    setPrivateLoading(true);
 
     try {
       const ids =
@@ -1316,12 +1205,8 @@ export default function App() {
 
       const conversation =
         await sb
-          .from(
-            "conversations"
-          )
-          .insert({
-            id,
-          });
+          .from("conversations")
+          .insert({ id });
 
       if (
         conversation.error &&
@@ -1335,19 +1220,14 @@ export default function App() {
         return;
       }
 
-      /*
-       * Add current user.
-       */
       const firstMember =
         await sb
           .from(
             "conversation_members"
           )
           .insert({
-            conversation_id:
-              id,
-            user_id:
-              user.id,
+            conversation_id: id,
+            user_id: user.id,
           });
 
       if (
@@ -1362,19 +1242,14 @@ export default function App() {
         return;
       }
 
-      /*
-       * Add selected member.
-       */
       const secondMember =
         await sb
           .from(
             "conversation_members"
           )
           .insert({
-            conversation_id:
-              id,
-            user_id:
-              member.id,
+            conversation_id: id,
+            user_id: member.id,
           });
 
       if (
@@ -1389,17 +1264,11 @@ export default function App() {
         return;
       }
 
-      await loadPrivateMessages(
-        id
-      );
+      await loadPrivateMessages(id);
 
-      setSelectedMember(
-        member
-      );
-
-      setConversationId(
-        id
-      );
+      setSelectedMember(member);
+      setConversationId(id);
+      setSection("messages");
 
       setToast(
         `Private chat with ${
@@ -1408,23 +1277,16 @@ export default function App() {
         } opened`
       );
     } finally {
-      setPrivateLoading(
-        false
-      );
+      setPrivateLoading(false);
     }
   }
 
-  /*
-   * LOAD PRIVATE MESSAGES
-   */
   async function loadPrivateMessages(
     id: string
   ) {
     const { data, error } =
       await sb
-        .from(
-          "private_messages"
-        )
+        .from("private_messages")
         .select(
           "id,conversation_id,sender_id,content,created_at,read_at,file_path,file_name,file_size,mime_type"
         )
@@ -1432,28 +1294,19 @@ export default function App() {
           "conversation_id",
           id
         )
-        .order(
-          "created_at",
-          {
-            ascending: true,
-          }
-        )
+        .order("created_at", {
+          ascending: true,
+        })
         .limit(200);
 
     if (error) {
-      setToast(
-        error.message
-      );
+      setToast(error.message);
       return;
     }
 
     const loaded =
-      (data ||
-        []) as PrivateMessage[];
+      (data || []) as PrivateMessage[];
 
-    /*
-     * Mark unread incoming messages as read.
-     */
     if (user) {
       const unreadIds =
         loaded
@@ -1468,19 +1321,14 @@ export default function App() {
               message.id
           );
 
-      if (
-        unreadIds.length
-      ) {
+      if (unreadIds.length) {
         const readAt =
           new Date().toISOString();
 
         await sb
-          .from(
-            "private_messages"
-          )
+          .from("private_messages")
           .update({
-            read_at:
-              readAt,
+            read_at: readAt,
           })
           .in(
             "id",
@@ -1502,14 +1350,9 @@ export default function App() {
       }
     }
 
-    setPrivateMessages(
-      loaded
-    );
+    setPrivateMessages(loaded);
   }
 
-  /*
-   * PRIVATE REALTIME
-   */
   useEffect(() => {
     if (
       !user ||
@@ -1556,9 +1399,6 @@ export default function App() {
               }
             );
 
-            /*
-             * Mark incoming message as read.
-             */
             if (
               incoming.sender_id !==
                 user.id &&
@@ -1644,9 +1484,7 @@ export default function App() {
         .subscribe();
 
     return () => {
-      sb.removeChannel(
-        channel
-      );
+      sb.removeChannel(channel);
     };
   }, [
     sb,
@@ -1654,9 +1492,6 @@ export default function App() {
     conversationId,
   ]);
 
-  /*
-   * SEND PRIVATE MESSAGE
-   */
   async function sendPrivateMessage() {
     if (!user) {
       setToast(
@@ -1732,9 +1567,7 @@ export default function App() {
               privateFile
             );
 
-        if (
-          upload.error
-        ) {
+        if (upload.error) {
           setToast(
             upload.error.message
           );
@@ -1754,9 +1587,7 @@ export default function App() {
 
       const { error } =
         await sb
-          .from(
-            "private_messages"
-          )
+          .from("private_messages")
           .insert({
             conversation_id:
               conversationId,
@@ -1776,10 +1607,6 @@ export default function App() {
           });
 
       if (error) {
-        /*
-         * If database insertion failed after
-         * file upload, try to remove the file.
-         */
         if (filePath) {
           await sb.storage
             .from(
@@ -1790,9 +1617,7 @@ export default function App() {
             ]);
         }
 
-        setToast(
-          error.message
-        );
+        setToast(error.message);
         return;
       }
 
@@ -1807,9 +1632,6 @@ export default function App() {
     }
   }
 
-  /*
-   * DELETE PRIVATE MESSAGE
-   */
   async function deletePrivateMessage(
     id: string,
     filePath?: string | null
@@ -1818,23 +1640,16 @@ export default function App() {
 
     const { error } =
       await sb
-        .from(
-          "private_messages"
-        )
+        .from("private_messages")
         .delete()
-        .eq(
-          "id",
-          id
-        )
+        .eq("id", id)
         .eq(
           "sender_id",
           user.id
         );
 
     if (error) {
-      setToast(
-        error.message
-      );
+      setToast(error.message);
       return;
     }
 
@@ -1852,8 +1667,7 @@ export default function App() {
       (old) =>
         old.filter(
           (message) =>
-            message.id !==
-            id
+            message.id !== id
         )
     );
 
@@ -1862,9 +1676,6 @@ export default function App() {
     );
   }
 
-  /*
-   * PRIVATE FILE OPEN
-   */
   async function openPrivateFile(
     path: string
   ) {
@@ -1898,9 +1709,6 @@ export default function App() {
     );
   }
 
-  /*
-   * PRIVATE FILE DOWNLOAD
-   */
   async function downloadPrivateFile(
     path: string,
     name: string
@@ -1917,8 +1725,7 @@ export default function App() {
           3600,
           {
             download:
-              name ||
-              true,
+              name || true,
           }
         );
 
@@ -1934,9 +1741,7 @@ export default function App() {
     }
 
     const link =
-      document.createElement(
-        "a"
-      );
+      document.createElement("a");
 
     link.href =
       data.signedUrl;
@@ -1945,13 +1750,17 @@ export default function App() {
       name ||
       "Academic-Hunters-file";
 
-    document.body.appendChild(
-      link
-    );
-
+    document.body.appendChild(link);
     link.click();
-
     link.remove();
+  }
+
+  function closePrivateChat() {
+    setSelectedMember(null);
+    setConversationId(null);
+    setPrivateMessages([]);
+    setPrivateText("");
+    setPrivateFile(null);
   }
 
   /*
@@ -1988,42 +1797,29 @@ export default function App() {
       return;
     }
 
-    setCallingMember(
-      member.id
-    );
+    setCallingMember(member.id);
 
     try {
-      /*
-       * Prevent duplicate outgoing invitations.
-       */
-      const { data: activeCall } =
-        await sb
-          .from(
-            "call_invitations"
-          )
-          .select(
-            "id,status,expires_at"
-          )
-          .eq(
-            "caller_id",
-            user.id
-          )
-          .in(
-            "status",
-            [
-              "ringing",
-              "accepted",
-            ]
-          )
-          .limit(1)
-          .maybeSingle();
+      const {
+        data: activeCall,
+      } = await sb
+        .from("call_invitations")
+        .select(
+          "id,status,expires_at"
+        )
+        .eq(
+          "caller_id",
+          user.id
+        )
+        .in("status", [
+          "ringing",
+          "accepted",
+        ])
+        .limit(1)
+        .maybeSingle();
 
-      if (
-        activeCall
-      ) {
-        setCallingMember(
-          null
-        );
+      if (activeCall) {
+        setCallingMember(null);
         setToast(
           "You already have an active call."
         );
@@ -2035,42 +1831,30 @@ export default function App() {
 
       const expiresAt =
         new Date(
-          Date.now() +
-            60_000
+          Date.now() + 60000
         ).toISOString();
 
       const {
         data: invitation,
         error,
       } = await sb
-        .from(
-          "call_invitations"
-        )
+        .from("call_invitations")
         .insert({
-          caller_id:
-            user.id,
-          receiver_id:
-            member.id,
-          room_id:
-            room,
+          caller_id: user.id,
+          receiver_id: member.id,
+          room_id: room,
           video,
-          status:
-            "ringing",
-          expires_at:
-            expiresAt,
+          status: "ringing",
+          expires_at: expiresAt,
         })
-        .select(
-          "id"
-        )
+        .select("id")
         .single();
 
       if (
         error ||
         !invitation
       ) {
-        setCallingMember(
-          null
-        );
+        setCallingMember(null);
 
         setToast(
           error?.message ||
@@ -2087,15 +1871,9 @@ export default function App() {
         }...`
       );
 
-      /*
-       * If nobody accepts within 60 seconds,
-       * cancel the outgoing invitation.
-       */
       window.setTimeout(
         async () => {
-          if (
-            callRef.current
-          ) {
+          if (callRef.current) {
             return;
           }
 
@@ -2104,9 +1882,7 @@ export default function App() {
               .from(
                 "call_invitations"
               )
-              .select(
-                "status"
-              )
+              .select("status")
               .eq(
                 "id",
                 invitation.id
@@ -2136,21 +1912,17 @@ export default function App() {
                 "ringing"
               );
 
-            setCallingMember(
-              null
-            );
+            setCallingMember(null);
 
             setToast(
               "No answer. Call invitation expired."
             );
           }
         },
-        60_500
+        60500
       );
     } catch (error: any) {
-      setCallingMember(
-        null
-      );
+      setCallingMember(null);
 
       setToast(
         error?.message ||
@@ -2170,9 +1942,7 @@ export default function App() {
       return;
     }
 
-    if (
-      callRef.current
-    ) {
+    if (callRef.current) {
       setToast(
         "You are already on a call."
       );
@@ -2182,23 +1952,15 @@ export default function App() {
     const accepted =
       incomingCall;
 
-    /*
-     * Verify the invitation is still valid.
-     */
     const {
       data: invitation,
       error: fetchError,
     } = await sb
-      .from(
-        "call_invitations"
-      )
+      .from("call_invitations")
       .select(
         "id,caller_id,receiver_id,room_id,video,status,expires_at"
       )
-      .eq(
-        "id",
-        accepted.id
-      )
+      .eq("id", accepted.id)
       .eq(
         "receiver_id",
         user.id
@@ -2209,9 +1971,7 @@ export default function App() {
       fetchError ||
       !invitation
     ) {
-      setIncomingCall(
-        null
-      );
+      setIncomingCall(null);
 
       setToast(
         fetchError?.message ||
@@ -2225,9 +1985,7 @@ export default function App() {
       invitation.status !==
       "ringing"
     ) {
-      setIncomingCall(
-        null
-      );
+      setIncomingCall(null);
 
       setToast(
         "This call is no longer ringing."
@@ -2244,12 +2002,9 @@ export default function App() {
         Date.now()
     ) {
       await sb
-        .from(
-          "call_invitations"
-        )
+        .from("call_invitations")
         .update({
-          status:
-            "expired",
+          status: "expired",
           ended_at:
             new Date().toISOString(),
         })
@@ -2262,9 +2017,7 @@ export default function App() {
           "ringing"
         );
 
-      setIncomingCall(
-        null
-      );
+      setIncomingCall(null);
 
       setToast(
         "This call invitation has expired."
@@ -2275,12 +2028,9 @@ export default function App() {
 
     const { error } =
       await sb
-        .from(
-          "call_invitations"
-        )
+        .from("call_invitations")
         .update({
-          status:
-            "accepted",
+          status: "accepted",
           answered_at:
             new Date().toISOString(),
         })
@@ -2298,26 +2048,21 @@ export default function App() {
         );
 
     if (error) {
-      setToast(
-        error.message
-      );
+      setToast(error.message);
       return;
     }
 
-    setIncomingCall(
-      null
-    );
+    setIncomingCall(null);
 
     setCall({
-      room:
-        accepted.room_id,
-      video:
-        accepted.video,
-      initiator:
-        false,
+      room: accepted.room_id,
+      video: accepted.video,
+      initiator: false,
       invitationId:
         accepted.id,
     });
+
+    setSection("home");
 
     setToast(
       "Call accepted. Connecting..."
@@ -2340,12 +2085,9 @@ export default function App() {
 
     const { error } =
       await sb
-        .from(
-          "call_invitations"
-        )
+        .from("call_invitations")
         .update({
-          status:
-            "rejected",
+          status: "rejected",
           ended_at:
             new Date().toISOString(),
         })
@@ -2363,15 +2105,11 @@ export default function App() {
         );
 
     if (error) {
-      setToast(
-        error.message
-      );
+      setToast(error.message);
       return;
     }
 
-    setIncomingCall(
-      null
-    );
+    setIncomingCall(null);
 
     setToast(
       "Call declined."
@@ -2379,7 +2117,7 @@ export default function App() {
   }
 
   /*
-   * PUBLIC FILE OPEN
+   * PUBLIC FILES
    */
   async function openFile(
     path: string
@@ -2393,9 +2131,7 @@ export default function App() {
 
     const { data, error } =
       await sb.storage
-        .from(
-          "gosnaps-files"
-        )
+        .from("gosnaps-files")
         .createSignedUrl(
           path,
           3600
@@ -2419,9 +2155,6 @@ export default function App() {
     );
   }
 
-  /*
-   * PUBLIC FILE DOWNLOAD
-   */
   async function downloadFile(
     path: string,
     name: string
@@ -2430,16 +2163,13 @@ export default function App() {
 
     const { data, error } =
       await sb.storage
-        .from(
-          "gosnaps-files"
-        )
+        .from("gosnaps-files")
         .createSignedUrl(
           path,
           3600,
           {
             download:
-              name ||
-              true,
+              name || true,
           }
         );
 
@@ -2455,9 +2185,7 @@ export default function App() {
     }
 
     const link =
-      document.createElement(
-        "a"
-      );
+      document.createElement("a");
 
     link.href =
       data.signedUrl;
@@ -2466,12 +2194,8 @@ export default function App() {
       name ||
       "Academic-Hunters-file";
 
-    document.body.appendChild(
-      link
-    );
-
+    document.body.appendChild(link);
     link.click();
-
     link.remove();
   }
 
@@ -2481,7 +2205,7 @@ export default function App() {
   async function send() {
     if (sending) return;
 
-    if (ai) {
+    if (section === "ai") {
       const q =
         text.trim();
 
@@ -2502,8 +2226,7 @@ export default function App() {
               },
               body:
                 JSON.stringify({
-                  message:
-                    q,
+                  message: q,
                 }),
             }
           );
@@ -2593,26 +2316,20 @@ export default function App() {
 
         const upload =
           await sb.storage
-            .from(
-              "gosnaps-files"
-            )
+            .from("gosnaps-files")
             .upload(
               path,
               file
             );
 
-        if (
-          upload.error
-        ) {
+        if (upload.error) {
           setToast(
             upload.error.message
           );
           return;
         }
 
-        attachmentPath =
-          path;
-
+        attachmentPath = path;
         attachmentName =
           file.name;
       }
@@ -2649,16 +2366,10 @@ export default function App() {
                 : null,
           });
 
-      if (
-        result.error
-      ) {
-        if (
-          attachmentPath
-        ) {
+      if (result.error) {
+        if (attachmentPath) {
           await sb.storage
-            .from(
-              "gosnaps-files"
-            )
+            .from("gosnaps-files")
             .remove([
               attachmentPath,
             ]);
@@ -2682,30 +2393,7 @@ export default function App() {
   }
 
   /*
-   * CLOSE PRIVATE CHAT
-   */
-  function closePrivateChat() {
-    setSelectedMember(
-      null
-    );
-
-    setConversationId(
-      null
-    );
-
-    setPrivateMessages(
-      []
-    );
-
-    setPrivateText("");
-    setPrivateFile(null);
-  }
-
-  /*
    * CLOSE CALL
-   *
-   * useCallback keeps the function stable
-   * while Call.tsx is mounted.
    */
   const closeCall =
     useCallback(
@@ -2714,9 +2402,7 @@ export default function App() {
           callRef.current;
 
         setCall(null);
-        setCallingMember(
-          null
-        );
+        setCallingMember(null);
 
         if (
           currentCall?.invitationId
@@ -2729,10 +2415,8 @@ export default function App() {
               "call_invitations"
             )
             .update({
-              status:
-                "ended",
-              ended_at:
-                now,
+              status: "ended",
+              ended_at: now,
             })
             .eq(
               "id",
@@ -2754,6 +2438,9 @@ export default function App() {
       [sb]
     );
 
+  /*
+   * FILTER MEMBERS
+   */
   const filteredMembers =
     members.filter(
       (m) => {
@@ -2778,319 +2465,1110 @@ export default function App() {
       }
     );
 
+  /*
+   * NAVIGATION HELPER
+   */
+  function navigate(
+    next: Section
+  ) {
+    setSection(next);
+
+    if (
+      next === "members" &&
+      user
+    ) {
+      void loadMembers();
+    }
+
+    if (
+      next === "profile" &&
+      user
+    ) {
+      void loadMyProfile();
+    }
+  }
+
+  /*
+   * NOT LOGGED IN
+   */
+  if (!user) {
+    return (
+      <main
+        style={{
+          minHeight: "100vh",
+          background:
+            "linear-gradient(135deg,#07111f,#102a43)",
+          color: "#fff",
+          padding: "20px",
+          boxSizing: "border-box",
+        }}
+      >
+        <div
+          style={{
+            maxWidth: "500px",
+            margin: "0 auto",
+            paddingTop: "12vh",
+          }}
+        >
+          <div
+            style={{
+              textAlign: "center",
+              marginBottom: "30px",
+            }}
+          >
+            <div
+              style={{
+                fontSize: "28px",
+                fontWeight: 900,
+                letterSpacing: "1px",
+              }}
+            >
+              ACADEMIC{" "}
+              <span
+                style={{
+                  opacity: 0.65,
+                }}
+              >
+                HUNTERS
+              </span>
+            </div>
+
+            <p
+              style={{
+                opacity: 0.75,
+              }}
+            >
+              CONNECT • CHAT • CALL • CREATE
+            </p>
+          </div>
+
+          <section
+            style={{
+              padding: "24px",
+              borderRadius: "20px",
+              background:
+                "rgba(255,255,255,.09)",
+              border:
+                "1px solid rgba(255,255,255,.12)",
+            }}
+          >
+            <h1>
+              Welcome to Academic Hunters
+            </h1>
+
+            <p
+              style={{
+                opacity: 0.75,
+                lineHeight: 1.6,
+              }}
+            >
+              Real-time conversations,
+              AI, private messaging,
+              files and browser
+              voice/video calling.
+            </p>
+
+            <input
+              value={email}
+              onChange={(e) =>
+                setEmail(
+                  e.target.value
+                )
+              }
+              placeholder="Email address"
+              type="email"
+              autoComplete="email"
+              style={{
+                width: "100%",
+                boxSizing:
+                  "border-box",
+                padding: "14px",
+                marginTop: "15px",
+                borderRadius: "12px",
+                border:
+                  "1px solid rgba(255,255,255,.2)",
+                background:
+                  "rgba(255,255,255,.1)",
+                color: "#fff",
+                outline: "none",
+              }}
+            />
+
+            <button
+              onClick={login}
+              disabled={sending}
+              style={{
+                width: "100%",
+                marginTop: "12px",
+                padding: "14px",
+                border: "none",
+                borderRadius: "12px",
+                fontWeight: 800,
+                cursor: "pointer",
+              }}
+            >
+              Sign in
+            </button>
+          </section>
+        </div>
+      </main>
+    );
+  }
+
+  /*
+   * DASHBOARD
+   */
   return (
-    <main className="wrap">
-      {/* HEADER */}
-      <header>
-        <div className="logo">
+    <main
+      style={{
+        minHeight: "100vh",
+        background:
+          "linear-gradient(135deg,#07111f,#102a43)",
+        color: "#fff",
+        boxSizing: "border-box",
+        paddingBottom: "30px",
+      }}
+    >
+      {/* TOP BAR */}
+      <header
+        style={{
+          position: "sticky",
+          top: 0,
+          zIndex: 100,
+          display: "flex",
+          alignItems: "center",
+          justifyContent:
+            "space-between",
+          gap: "12px",
+          padding:
+            "13px 16px",
+          background:
+            "rgba(7,17,31,.95)",
+          backdropFilter:
+            "blur(15px)",
+          borderBottom:
+            "1px solid rgba(255,255,255,.1)",
+        }}
+      >
+        <button
+          onClick={() =>
+            navigate("home")
+          }
+          style={{
+            border: "none",
+            background: "none",
+            color: "#fff",
+            fontSize: "18px",
+            fontWeight: 900,
+            cursor: "pointer",
+            padding: 0,
+          }}
+        >
           ACADEMIC{" "}
-          <span>
+          <span
+            style={{
+              opacity: 0.6,
+            }}
+          >
             HUNTERS
           </span>
-        </div>
+        </button>
 
-        <div className="live">
+        <div
+          style={{
+            fontSize: "12px",
+            opacity: 0.8,
+          }}
+        >
           ● {online} online
         </div>
       </header>
 
-      {/* HERO */}
-      <section className="hero">
-        <small>
-          CONNECT • CHAT • CALL • CREATE
-        </small>
-
-        <h1>
-          Welcome to Academic Hunters.
-        </h1>
-
-        <p>
-          Real-time conversations,
-          AI, private messaging,
-          files and browser
-          voice/video calling.
-        </p>
-      </section>
-
-      {/* LOGIN */}
-      {!user ? (
-        <section className="login">
-          <input
-            value={email}
-            onChange={(e) =>
-              setEmail(
-                e.target.value
-              )
-            }
-            placeholder="Email address"
-            type="email"
-            autoComplete="email"
-          />
-
-          <button
-            onClick={login}
-            disabled={sending}
-          >
-            Sign in
-          </button>
-        </section>
-      ) : (
-        <div className="welcome">
-          Signed in as{" "}
-          <b>
-            {user.email}
-          </b>
-        </div>
-      )}
-
-      {/* PROFILE */}
-      {user && (
-        <section
+      <div
+        style={{
+          display: "flex",
+          maxWidth: "1400px",
+          margin: "0 auto",
+          minHeight:
+            "calc(100vh - 60px)",
+        }}
+      >
+        {/* SIDEBAR */}
+        <aside
           style={{
-            marginTop:
-              "15px",
-            padding:
-              "14px",
-            borderRadius:
-              "14px",
-            background:
-              "rgba(255,255,255,.08)",
+            width: "220px",
+            flexShrink: 0,
+            padding: "18px 12px",
+            borderRight:
+              "1px solid rgba(255,255,255,.08)",
+            boxSizing: "border-box",
           }}
         >
-          <h3>
-            👤 My Profile
-          </h3>
+          <div
+            style={{
+              fontSize: "11px",
+              opacity: 0.5,
+              fontWeight: 800,
+              margin:
+                "4px 10px 10px",
+              letterSpacing:
+                "1px",
+            }}
+          >
+            DASHBOARD
+          </div>
+
+          {[
+            ["home", "🏠", "Home"],
+            [
+              "messages",
+              "💬",
+              "Messages",
+            ],
+            [
+              "ai",
+              "✨",
+              "Academic Hunters AI",
+            ],
+            [
+              "members",
+              "👥",
+              "Members",
+            ],
+            [
+              "profile",
+              "👤",
+              "My Profile",
+            ],
+          ].map(
+            ([id, icon, label]) => (
+              <button
+                key={id}
+                onClick={() =>
+                  navigate(
+                    id as Section
+                  )
+                }
+                style={{
+                  width: "100%",
+                  display: "flex",
+                  alignItems:
+                    "center",
+                  gap: "10px",
+                  padding:
+                    "12px 13px",
+                  marginBottom:
+                    "6px",
+                  border: "none",
+                  borderRadius:
+                    "11px",
+                  background:
+                    section === id
+                      ? "rgba(255,255,255,.14)"
+                      : "transparent",
+                  color: "#fff",
+                  textAlign: "left",
+                  fontWeight:
+                    section === id
+                      ? 800
+                      : 500,
+                  cursor:
+                    "pointer",
+                }}
+              >
+                <span>
+                  {icon}
+                </span>
+                <span
+                  style={{
+                    fontSize:
+                      "13px",
+                  }}
+                >
+                  {label}
+                </span>
+              </button>
+            )
+          )}
 
           <div
             style={{
-              display:
-                "flex",
-              gap:
-                "12px",
-              alignItems:
-                "center",
-              flexWrap:
-                "wrap",
-              marginTop:
-                "10px",
+              height: "1px",
+              background:
+                "rgba(255,255,255,.1)",
+              margin:
+                "16px 8px",
+            }}
+          />
+
+          <div
+            style={{
+              fontSize: "11px",
+              opacity: 0.5,
+              fontWeight: 800,
+              margin:
+                "4px 10px 10px",
+              letterSpacing:
+                "1px",
             }}
           >
-            {myProfile?.avatar_url ? (
-              <img
-                src={
-                  myProfile.avatar_url
-                }
-                alt="Profile"
-                style={{
-                  width:
-                    "58px",
-                  height:
-                    "58px",
-                  borderRadius:
-                    "50%",
-                  objectFit:
-                    "cover",
-                }}
-              />
-            ) : (
+            CALLS
+          </div>
+
+          <button
+            onClick={() => {
+              navigate("members");
+              setToast(
+                "Choose a member for a voice call."
+              );
+            }}
+            style={{
+              width: "100%",
+              padding:
+                "11px 13px",
+              marginBottom:
+                "6px",
+              border: "none",
+              borderRadius:
+                "11px",
+              background:
+                "transparent",
+              color: "#fff",
+              textAlign: "left",
+              cursor: "pointer",
+            }}
+          >
+            📞 Voice Call
+          </button>
+
+          <button
+            onClick={() => {
+              navigate("members");
+              setToast(
+                "Choose a member for a video call."
+              );
+            }}
+            style={{
+              width: "100%",
+              padding:
+                "11px 13px",
+              border: "none",
+              borderRadius:
+                "11px",
+              background:
+                "transparent",
+              color: "#fff",
+              textAlign: "left",
+              cursor: "pointer",
+            }}
+          >
+            🎥 Video Call
+          </button>
+        </aside>
+
+        {/* MAIN CONTENT */}
+        <section
+          style={{
+            flex: 1,
+            minWidth: 0,
+            padding: "20px",
+            boxSizing: "border-box",
+          }}
+        >
+          {/* HOME */}
+          {section === "home" && (
+            <div>
               <div
                 style={{
-                  width:
-                    "58px",
-                  height:
-                    "58px",
-                  borderRadius:
-                    "50%",
-                  display:
-                    "flex",
-                  alignItems:
-                    "center",
-                  justifyContent:
-                    "center",
-                  background:
-                    "rgba(255,255,255,.15)",
-                  fontSize:
+                  padding:
                     "25px",
+                  borderRadius:
+                    "20px",
+                  background:
+                    "rgba(255,255,255,.07)",
+                  border:
+                    "1px solid rgba(255,255,255,.1)",
+                  marginBottom:
+                    "18px",
                 }}
               >
-                👤
-              </div>
-            )}
+                <small
+                  style={{
+                    opacity: 0.65,
+                    fontWeight: 800,
+                  }}
+                >
+                  CONNECT • CHAT • CALL • CREATE
+                </small>
 
-            <div
-              style={{
-                flex: 1,
-                minWidth:
-                  "180px",
-              }}
-            >
-              <input
-                value={
-                  displayName
-                }
-                onChange={(
-                  e
-                ) =>
-                  setDisplayName(
-                    e.target
-                      .value
+                <h1
+                  style={{
+                    fontSize:
+                      "clamp(25px,5vw,40px)",
+                    margin:
+                      "12px 0 8px",
+                  }}
+                >
+                  Welcome to Academic Hunters.
+                </h1>
+
+                <p
+                  style={{
+                    opacity: 0.75,
+                    lineHeight:
+                      1.6,
+                    maxWidth:
+                      "700px",
+                  }}
+                >
+                  Your academic communication
+                  dashboard. Chat with members,
+                  use Academic Hunters AI, share
+                  files and make voice or video
+                  calls.
+                </p>
+              </div>
+
+              <div
+                style={{
+                  display:
+                    "grid",
+                  gridTemplateColumns:
+                    "repeat(auto-fit,minmax(170px,1fr))",
+                  gap: "12px",
+                }}
+              >
+                {[
+                  [
+                    "💬",
+                    "Messages",
+                    "Chat with members",
+                    "messages",
+                  ],
+                  [
+                    "✨",
+                    "Academic Hunters AI",
+                    "Ask questions",
+                    "ai",
+                  ],
+                  [
+                    "👥",
+                    "Members",
+                    `${online} online`,
+                    "members",
+                  ],
+                  [
+                    "👤",
+                    "My Profile",
+                    "Manage your profile",
+                    "profile",
+                  ],
+                ].map(
+                  (item) => (
+                    <button
+                      key={
+                        item[1]
+                      }
+                      onClick={() =>
+                        navigate(
+                          item[3] as Section
+                        )
+                      }
+                      style={{
+                        textAlign:
+                          "left",
+                        padding:
+                          "18px",
+                        border:
+                          "1px solid rgba(255,255,255,.1)",
+                        borderRadius:
+                          "16px",
+                        background:
+                          "rgba(255,255,255,.07)",
+                        color:
+                          "#fff",
+                        cursor:
+                          "pointer",
+                      }}
+                    >
+                      <div
+                        style={{
+                          fontSize:
+                            "27px",
+                        }}
+                      >
+                        {item[0]}
+                      </div>
+
+                      <b
+                        style={{
+                          display:
+                            "block",
+                          marginTop:
+                            "10px",
+                        }}
+                      >
+                        {item[1]}
+                      </b>
+
+                      <small
+                        style={{
+                          opacity:
+                            0.65,
+                        }}
+                      >
+                        {item[2]}
+                      </small>
+                    </button>
+                  )
+                )}
+              </div>
+
+              <div
+                style={{
+                  marginTop:
+                    "18px",
+                  padding:
+                    "16px",
+                  borderRadius:
+                    "15px",
+                  background:
+                    "rgba(255,255,255,.05)",
+                }}
+              >
+                Signed in as{" "}
+                <b>
+                  {user.email}
+                </b>
+              </div>
+            </div>
+          )}
+
+          {/* MESSAGES */}
+          {section === "messages" && (
+            <div>
+              <PageTitle
+                icon="💬"
+                title="Messages"
+                subtitle="Public conversation and private chats."
+              />
+
+              {selectedMember &&
+              conversationId ? (
+                <PrivateChat
+                  selectedMember={
+                    selectedMember
+                  }
+                  conversationId={
+                    conversationId
+                  }
+                  privateMessages={
+                    privateMessages
+                  }
+                  privateText={
+                    privateText
+                  }
+                  setPrivateText={
+                    setPrivateText
+                  }
+                  privateFile={
+                    privateFile
+                  }
+                  setPrivateFile={
+                    setPrivateFile
+                  }
+                  privateLoading={
+                    privateLoading
+                  }
+                  sending={sending}
+                  user={user}
+                  onlineUsers={
+                    onlineUsers
+                  }
+                  closePrivateChat={
+                    closePrivateChat
+                  }
+                  sendPrivateMessage={
+                    sendPrivateMessage
+                  }
+                  deletePrivateMessage={
+                    deletePrivateMessage
+                  }
+                  openPrivateFile={
+                    openPrivateFile
+                  }
+                  downloadPrivateFile={
+                    downloadPrivateFile
+                  }
+                />
+              ) : (
+                <>
+                  <div
+                    style={{
+                      display:
+                        "flex",
+                      justifyContent:
+                        "space-between",
+                      alignItems:
+                        "center",
+                      marginBottom:
+                        "10px",
+                    }}
+                  >
+                    <h3>
+                      Public Chat
+                    </h3>
+
+                    <button
+                      onClick={() =>
+                        navigate(
+                          "members"
+                        )
+                      }
+                    >
+                      👥 Find Member
+                    </button>
+                  </div>
+
+                  <PublicMessages
+                    messages={
+                      messages
+                    }
+                    openFile={
+                      openFile
+                    }
+                    downloadFile={
+                      downloadFile
+                    }
+                  />
+
+                  {file && (
+                    <div
+                      style={{
+                        padding:
+                          "8px",
+                        marginTop:
+                          "8px",
+                        borderRadius:
+                          "8px",
+                        background:
+                          "rgba(255,255,255,.08)",
+                      }}
+                    >
+                      📎{" "}
+                      {file.name}
+
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setFile(
+                            null
+                          )
+                        }
+                        style={{
+                          marginLeft:
+                            "8px",
+                        }}
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  )}
+
+                  <Composer
+                    text={text}
+                    setText={
+                      setText
+                    }
+                    file={file}
+                    setFile={
+                      setFile
+                    }
+                    sending={
+                      sending
+                    }
+                    placeholder="Message Academic Hunters…"
+                    onSend={
+                      send
+                    }
+                  />
+                </>
+              )}
+            </div>
+          )}
+
+          {/* AI */}
+          {section === "ai" && (
+            <div>
+              <PageTitle
+                icon="✨"
+                title="Academic Hunters AI"
+                subtitle="Ask questions and get AI assistance."
+              />
+
+              <PublicMessages
+                messages={
+                  messages.filter(
+                    (m) =>
+                      m.sender ===
+                      "Academic Hunters AI"
                   )
                 }
-                placeholder="Your display name"
-                maxLength={60}
+                openFile={
+                  openFile
+                }
+                downloadFile={
+                  downloadFile
+                }
+              />
+
+              <Composer
+                text={text}
+                setText={
+                  setText
+                }
+                file={null}
+                setFile={
+                  setFile
+                }
+                sending={
+                  sending
+                }
+                placeholder="Ask Academic Hunters AI…"
+                onSend={
+                  send
+                }
+                hideFile
+              />
+            </div>
+          )}
+
+          {/* MEMBERS */}
+          {section === "members" && (
+            <div>
+              <PageTitle
+                icon="👥"
+                title="Members"
+                subtitle={`${online} members online`}
+              />
+
+              <input
+                type="search"
+                value={
+                  memberSearch
+                }
+                onChange={(e) =>
+                  setMemberSearch(
+                    e.target.value
+                  )
+                }
+                placeholder="🔎 Search members..."
                 style={{
                   width:
                     "100%",
+                  padding:
+                    "13px",
                   boxSizing:
                     "border-box",
-                  padding:
-                    "10px",
                   borderRadius:
-                    "9px",
+                    "12px",
                   border:
-                    "1px solid rgba(255,255,255,.2)",
+                    "1px solid rgba(255,255,255,.15)",
+                  background:
+                    "rgba(255,255,255,.07)",
+                  color:
+                    "#fff",
+                  marginBottom:
+                    "15px",
                 }}
               />
 
-              <input
-                type="file"
-                accept="image/*"
-                onChange={(
-                  e
-                ) =>
-                  setProfileFile(
-                    e.target
-                      .files?.[0] ||
-                      null
-                  )
-                }
-                style={{
-                  marginTop:
-                    "8px",
-                }}
-              />
+              {filteredMembers.length ===
+              0 ? (
+                <div
+                  style={{
+                    padding:
+                      "20px",
+                    borderRadius:
+                      "15px",
+                    background:
+                      "rgba(255,255,255,.07)",
+                  }}
+                >
+                  {memberSearch.trim()
+                    ? "No members found."
+                    : "No other members available."}
+                </div>
+              ) : (
+                <div
+                  style={{
+                    display:
+                      "grid",
+                    gridTemplateColumns:
+                      "repeat(auto-fit,minmax(250px,1fr))",
+                    gap:
+                      "12px",
+                  }}
+                >
+                  {filteredMembers.map(
+                    (m) => (
+                      <MemberCard
+                        key={
+                          m.id
+                        }
+                        member={
+                          m
+                        }
+                        online={
+                          Boolean(
+                            onlineUsers[
+                              m.id
+                            ]
+                          )
+                        }
+                        calling={
+                          callingMember ===
+                          m.id
+                        }
+                        busy={
+                          Boolean(
+                            callingMember
+                          ) ||
+                          Boolean(
+                            call
+                          )
+                        }
+                        privateLoading={
+                          privateLoading
+                        }
+                        onChat={() =>
+                          void openPrivateChat(
+                            m
+                          )
+                        }
+                        onVoice={() =>
+                          void startMemberCall(
+                            m,
+                            false
+                          )
+                        }
+                        onVideo={() =>
+                          void startMemberCall(
+                            m,
+                            true
+                          )
+                        }
+                      />
+                    )
+                  )}
+                </div>
+              )}
             </div>
+          )}
 
-            <button
-              type="button"
-              onClick={
-                saveProfile
-              }
-              disabled={
-                savingProfile
-              }
-            >
-              {savingProfile
-                ? "Saving..."
-                : "Save Profile"}
-            </button>
+          {/* PROFILE */}
+          {section === "profile" && (
+            <div>
+              <PageTitle
+                icon="👤"
+                title="My Profile"
+                subtitle="Manage your Academic Hunters profile."
+              />
 
-            <button
-              type="button"
-              onClick={
-                enableNotifications
-              }
-            >
-              {notificationPermission ===
-              "granted"
-                ? "🔔 Notifications On"
-                : "🔔 Enable Notifications"}
-            </button>
-          </div>
+              <div
+                style={{
+                  maxWidth:
+                    "650px",
+                  padding:
+                    "20px",
+                  borderRadius:
+                    "18px",
+                  background:
+                    "rgba(255,255,255,.07)",
+                  border:
+                    "1px solid rgba(255,255,255,.1)",
+                }}
+              >
+                <div
+                  style={{
+                    display:
+                      "flex",
+                    gap:
+                      "15px",
+                    alignItems:
+                      "center",
+                    flexWrap:
+                      "wrap",
+                  }}
+                >
+                  {myProfile?.avatar_url ? (
+                    <img
+                      src={
+                        myProfile.avatar_url
+                      }
+                      alt="Profile"
+                      style={{
+                        width:
+                          "75px",
+                        height:
+                          "75px",
+                        borderRadius:
+                          "50%",
+                        objectFit:
+                          "cover",
+                      }}
+                    />
+                  ) : (
+                    <div
+                      style={{
+                        width:
+                          "75px",
+                        height:
+                          "75px",
+                        borderRadius:
+                          "50%",
+                        display:
+                          "flex",
+                        alignItems:
+                          "center",
+                        justifyContent:
+                          "center",
+                        background:
+                          "rgba(255,255,255,.12)",
+                        fontSize:
+                          "32px",
+                      }}
+                    >
+                      👤
+                    </div>
+                  )}
+
+                  <div>
+                    <b>
+                      {user.email}
+                    </b>
+
+                    <div
+                      style={{
+                        opacity:
+                          0.65,
+                        marginTop:
+                          "4px",
+                      }}
+                    >
+                      Academic Hunters member
+                    </div>
+                  </div>
+                </div>
+
+                <label
+                  style={{
+                    display:
+                      "block",
+                    marginTop:
+                      "20px",
+                    marginBottom:
+                      "7px",
+                  }}
+                >
+                  Display name
+                </label>
+
+                <input
+                  value={
+                    displayName
+                  }
+                  onChange={(e) =>
+                    setDisplayName(
+                      e.target.value
+                    )
+                  }
+                  placeholder="Your display name"
+                  maxLength={60}
+                  style={{
+                    width:
+                      "100%",
+                    boxSizing:
+                      "border-box",
+                    padding:
+                      "12px",
+                    borderRadius:
+                      "10px",
+                  }}
+                />
+
+                <label
+                  style={{
+                    display:
+                      "block",
+                    marginTop:
+                      "14px",
+                    marginBottom:
+                      "7px",
+                  }}
+                >
+                  Profile picture
+                </label>
+
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={(e) =>
+                    setProfileFile(
+                      e.target
+                        .files?.[0] ||
+                      null
+                    )
+                  }
+                />
+
+                <div
+                  style={{
+                    display:
+                      "flex",
+                    gap:
+                      "10px",
+                    flexWrap:
+                      "wrap",
+                    marginTop:
+                      "18px",
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void saveProfile()
+                    }
+                    disabled={
+                      savingProfile
+                    }
+                  >
+                    {savingProfile
+                      ? "Saving..."
+                      : "💾 Save Profile"}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={
+                      enableNotifications
+                    }
+                  >
+                    {notificationPermission ===
+                    "granted"
+                      ? "🔔 Notifications On"
+                      : "🔔 Enable Notifications"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </section>
-      )}
-
-      {/* NAVIGATION */}
-      <nav>
-        <button
-          className={
-            !ai
-              ? "active"
-              : ""
-          }
-          onClick={() =>
-            setAi(false)
-          }
-        >
-          💬 Messages
-        </button>
-
-        <button
-          className={
-            ai
-              ? "active"
-              : ""
-          }
-          onClick={() =>
-            setAi(true)
-          }
-        >
-          ✨ Academic Hunters AI
-        </button>
-
-        <button
-          onClick={() => {
-            if (!user) {
-              setToast(
-                "Sign in before calling."
-              );
-              return;
-            }
-
-            void loadMembers();
-
-            setToast(
-              "Choose a member for a voice call."
-            );
-          }}
-        >
-          📞 Voice
-        </button>
-
-        <button
-          onClick={() => {
-            if (!user) {
-              setToast(
-                "Sign in before calling."
-              );
-              return;
-            }
-
-            void loadMembers();
-
-            setToast(
-              "Choose a member for a video call."
-            );
-          }}
-        >
-          🎥 Video
-        </button>
-
-        <button
-          onClick={() =>
-            void loadMembers()
-          }
-        >
-          👥 Members
-        </button>
-      </nav>
-
-      {/* TOAST */}
-      {toast && (
-        <div
-          className="toast"
-          onClick={() =>
-            setToast("")
-          }
-        >
-          {toast}
-        </div>
-      )}
+      </div>
 
       {/* INCOMING CALL */}
       {incomingCall && (
         <div
-          className="incoming-call"
           style={{
             position:
               "fixed",
@@ -3098,14 +3576,20 @@ export default function App() {
             right: "12px",
             bottom: "18px",
             zIndex: 9998,
+            maxWidth:
+              "500px",
+            margin:
+              "0 auto",
             padding:
-              "16px",
+              "18px",
             borderRadius:
-              "16px",
+              "18px",
             background:
-              "rgba(20,20,20,.98)",
+              "rgba(15,20,30,.98)",
             boxShadow:
-              "0 12px 40px rgba(0,0,0,.35)",
+              "0 15px 50px rgba(0,0,0,.5)",
+            border:
+              "1px solid rgba(255,255,255,.12)",
           }}
         >
           <h3>
@@ -3129,12 +3613,9 @@ export default function App() {
                 "flex",
               gap:
                 "10px",
-              flexWrap:
-                "wrap",
             }}
           >
             <button
-              type="button"
               onClick={() =>
                 void acceptCall()
               }
@@ -3143,7 +3624,6 @@ export default function App() {
             </button>
 
             <button
-              type="button"
               onClick={() =>
                 void rejectCall()
               }
@@ -3154,618 +3634,166 @@ export default function App() {
         </div>
       )}
 
-      {/* MEMBERS */}
-      {members.length > 0 && (
-        <aside className="members">
-          <h3>
-            👥 Academic Hunters Members
-          </h3>
-
-          <input
-            type="search"
-            value={
-              memberSearch
-            }
-            onChange={(
-              e
-            ) =>
-              setMemberSearch(
-                e.target
-                  .value
-              )
-            }
-            placeholder="🔎 Search members..."
-            style={{
-              width:
-                "100%",
-              padding:
-                "11px 13px",
-              borderRadius:
-                "10px",
-              border:
-                "1px solid rgba(255,255,255,.18)",
-              outline:
-                "none",
-              marginBottom:
-                "12px",
-              boxSizing:
-                "border-box",
-            }}
-          />
-
-          {filteredMembers.length ===
-          0 ? (
-            <div
-              style={{
-                padding:
-                  "14px",
-                borderRadius:
-                  "12px",
-                background:
-                  "rgba(255,255,255,.08)",
-              }}
-            >
-              {memberSearch.trim()
-                ? "No members found."
-                : "No other members available."}
-            </div>
-          ) : (
-            filteredMembers.map(
-              (m) => (
-                <div
-                  key={
-                    m.id
-                  }
-                  style={{
-                    padding:
-                      "12px",
-                    marginBottom:
-                      "10px",
-                    borderRadius:
-                      "12px",
-                    background:
-                      "rgba(255,255,255,.08)",
-                  }}
-                >
-                  <div
-                    style={{
-                      display:
-                        "flex",
-                      gap:
-                        "10px",
-                      alignItems:
-                        "center",
-                    }}
-                  >
-                    {m.avatar_url ? (
-                      <img
-                        src={
-                          m.avatar_url
-                        }
-                        alt=""
-                        style={{
-                          width:
-                            "42px",
-                          height:
-                            "42px",
-                          borderRadius:
-                            "50%",
-                          objectFit:
-                            "cover",
-                        }}
-                      />
-                    ) : (
-                      <div
-                        style={{
-                          width:
-                            "42px",
-                          height:
-                            "42px",
-                          borderRadius:
-                            "50%",
-                          display:
-                            "flex",
-                          alignItems:
-                            "center",
-                          justifyContent:
-                            "center",
-                          background:
-                            "rgba(255,255,255,.12)",
-                        }}
-                      >
-                        👤
-                      </div>
-                    )}
-
-                    <div>
-                      <div>
-                        <span
-                          style={{
-                            color:
-                              onlineUsers[
-                                m.id
-                              ]
-                                ? "#31d158"
-                                : "#999",
-                          }}
-                        >
-                          ●
-                        </span>{" "}
-                        {m.display_name ||
-                          "Academic Hunters member"}
-                      </div>
-
-                      <small
-                        style={{
-                          opacity:
-                            0.7,
-                        }}
-                      >
-                        {onlineUsers[
-                          m.id
-                        ]
-                          ? "Online"
-                          : "Offline"}
-                      </small>
-                    </div>
-                  </div>
-
-                  <div
-                    style={{
-                      display:
-                        "flex",
-                      gap:
-                        "8px",
-                      marginTop:
-                        "9px",
-                      flexWrap:
-                        "wrap",
-                    }}
-                  >
-                    <button
-                      type="button"
-                      disabled={
-                        privateLoading
-                      }
-                      onClick={() =>
-                        void openPrivateChat(
-                          m
-                        )
-                      }
-                    >
-                      💬 Chat
-                    </button>
-
-                    <button
-                      type="button"
-                      disabled={
-                        Boolean(
-                          callingMember
-                        ) ||
-                        Boolean(
-                          call
-                        )
-                      }
-                      onClick={() =>
-                        void startMemberCall(
-                          m,
-                          false
-                        )
-                      }
-                    >
-                      {callingMember ===
-                      m.id
-                        ? "Calling..."
-                        : "📞 Voice"}
-                    </button>
-
-                    <button
-                      type="button"
-                      disabled={
-                        Boolean(
-                          callingMember
-                        ) ||
-                        Boolean(
-                          call
-                        )
-                      }
-                      onClick={() =>
-                        void startMemberCall(
-                          m,
-                          true
-                        )
-                      }
-                    >
-                      🎥 Video
-                    </button>
-                  </div>
-                </div>
-              )
-            )
-          )}
-        </aside>
+      {/* TOAST */}
+      {toast && (
+        <div
+          onClick={() =>
+            setToast("")
+          }
+          style={{
+            position:
+              "fixed",
+            top: "75px",
+            right: "15px",
+            left: "15px",
+            zIndex: 9999,
+            maxWidth:
+              "550px",
+            margin:
+              "0 auto",
+            padding:
+              "13px 16px",
+            borderRadius:
+              "12px",
+            background:
+              "rgba(0,0,0,.9)",
+            color:
+              "#fff",
+            textAlign:
+              "center",
+            boxShadow:
+              "0 8px 30px rgba(0,0,0,.35)",
+            cursor:
+              "pointer",
+          }}
+        >
+          {toast}
+        </div>
       )}
 
-      {/* PRIVATE CHAT */}
-      {selectedMember &&
-        conversationId && (
-          <section
-            className="private-chat"
-            style={{
-              marginTop:
-                "15px",
-              padding:
-                "14px",
-              borderRadius:
-                "14px",
-              background:
-                "rgba(255,255,255,.08)",
-            }}
-          >
-            <div
-              style={{
-                display:
-                  "flex",
-                justifyContent:
-                  "space-between",
-                alignItems:
-                  "center",
-                gap:
-                  "10px",
-                marginBottom:
-                  "12px",
-              }}
-            >
-              <div>
-                <b>
-                  💬 Private Chat
-                </b>
+      {/* CALL WINDOW */}
+      {call && (
+        <Call
+          room={call.room}
+          video={call.video}
+          initiator={
+            call.initiator
+          }
+          invitationId={
+            call.invitationId
+          }
+          onClose={
+            closeCall
+          }
+        />
+      )}
+    </main>
+  );
+}
 
-                <div
-                  style={{
-                    marginTop:
-                      "4px",
-                  }}
-                >
-                  {selectedMember.avatar_url && (
-                    <img
-                      src={
-                        selectedMember.avatar_url
-                      }
-                      alt=""
-                      style={{
-                        width:
-                          "30px",
-                        height:
-                          "30px",
-                        borderRadius:
-                          "50%",
-                        objectFit:
-                          "cover",
-                        verticalAlign:
-                          "middle",
-                        marginRight:
-                          "7px",
-                      }}
-                    />
-                  )}
+/*
+ * PAGE TITLE
+ */
+function PageTitle({
+  icon,
+  title,
+  subtitle,
+}: {
+  icon: string;
+  title: string;
+  subtitle: string;
+}) {
+  return (
+    <div
+      style={{
+        marginBottom:
+          "20px",
+      }}
+    >
+      <div
+        style={{
+          fontSize:
+            "12px",
+          opacity:
+            0.55,
+          fontWeight:
+            800,
+          letterSpacing:
+            "1px",
+        }}
+      >
+        ACADEMIC HUNTERS
+      </div>
 
-                  <span
-                    style={{
-                      color:
-                        onlineUsers[
-                          selectedMember.id
-                        ]
-                          ? "#31d158"
-                          : "#999",
-                    }}
-                  >
-                    ●
-                  </span>{" "}
-                  {
-                    selectedMember.display_name ||
-                    "Academic Hunters member"
-                  }
-                </div>
-              </div>
+      <h1
+        style={{
+          margin:
+            "5px 0",
+          fontSize:
+            "28px",
+        }}
+      >
+        {icon} {title}
+      </h1>
 
-              <button
-                type="button"
-                onClick={
-                  closePrivateChat
-                }
-              >
-                ✕
-              </button>
-            </div>
+      <p
+        style={{
+          margin:
+            0,
+          opacity:
+            0.65,
+        }}
+      >
+        {subtitle}
+      </p>
+    </div>
+  );
+}
 
-            <div
-              style={{
-                maxHeight:
-                  "350px",
-                overflowY:
-                  "auto",
-                padding:
-                  "5px",
-              }}
-            >
-              {privateLoading ? (
-                <p>
-                  Loading private messages...
-                </p>
-              ) : privateMessages.length ===
-                0 ? (
-                <p>
-                  No private messages yet.
-                  Start the conversation.
-                </p>
-              ) : (
-                privateMessages.map(
-                  (m) => (
-                    <article
-                      key={
-                        m.id
-                      }
-                      style={{
-                        padding:
-                          "10px 11px",
-                        marginBottom:
-                          "8px",
-                        borderRadius:
-                          "10px",
-                        background:
-                          m.sender_id ===
-                          user?.id
-                            ? "rgba(0,128,105,.25)"
-                            : "rgba(255,255,255,.10)",
-                      }}
-                    >
-                      <div
-                        style={{
-                          display:
-                            "flex",
-                          justifyContent:
-                            "space-between",
-                          gap:
-                            "8px",
-                        }}
-                      >
-                        <b>
-                          {m.sender_id ===
-                          user?.id
-                            ? "You"
-                            : selectedMember.display_name ||
-                              "Member"}
-                        </b>
-
-                        {m.sender_id ===
-                          user?.id && (
-                          <button
-                            type="button"
-                            onClick={() =>
-                              void deletePrivateMessage(
-                                m.id,
-                                m.file_path
-                              )
-                            }
-                            style={{
-                              fontSize:
-                                "11px",
-                            }}
-                          >
-                            🗑️
-                          </button>
-                        )}
-                      </div>
-
-                      <p
-                        style={{
-                          whiteSpace:
-                            "pre-wrap",
-                          overflowWrap:
-                            "anywhere",
-                        }}
-                      >
-                        {
-                          m.content
-                        }
-                      </p>
-
-                      {m.file_path && (
-                        <div
-                          style={{
-                            display:
-                              "flex",
-                            gap:
-                              "7px",
-                            flexWrap:
-                              "wrap",
-                            marginTop:
-                              "7px",
-                          }}
-                        >
-                          <button
-                            type="button"
-                            onClick={() =>
-                              void openPrivateFile(
-                                m.file_path!
-                              )
-                            }
-                          >
-                            📂 Open{" "}
-                            {
-                              m.file_name
-                            }
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={() =>
-                              void downloadPrivateFile(
-                                m.file_path!,
-                                m.file_name ||
-                                  "file"
-                              )
-                            }
-                          >
-                            ⬇️ Download
-                          </button>
-                        </div>
-                      )}
-
-                      <small
-                        style={{
-                          opacity:
-                            0.7,
-                        }}
-                      >
-                        {new Date(
-                          m.created_at
-                        ).toLocaleString()}
-
-                        {m.sender_id ===
-                          user?.id &&
-                          m.read_at
-                          ? " • ✓✓ Read"
-                          : ""}
-                      </small>
-                    </article>
-                  )
-                )
-              )}
-            </div>
-
-            {/* PRIVATE FILE */}
-            {privateFile && (
-              <div
-                style={{
-                  marginTop:
-                    "8px",
-                  padding:
-                    "8px",
-                  borderRadius:
-                    "8px",
-                  background:
-                    "rgba(255,255,255,.08)",
-                  overflowWrap:
-                    "anywhere",
-                }}
-              >
-                📎{" "}
-                {
-                  privateFile.name
-                }
-
-                <button
-                  type="button"
-                  onClick={() =>
-                    setPrivateFile(
-                      null
-                    )
-                  }
-                  style={{
-                    marginLeft:
-                      "8px",
-                  }}
-                >
-                  ✕
-                </button>
-              </div>
-            )}
-
-            <div
-              style={{
-                display:
-                  "flex",
-                gap:
-                  "8px",
-                marginTop:
-                  "10px",
-                alignItems:
-                  "center",
-              }}
-            >
-              <label
-                style={{
-                  cursor:
-                    "pointer",
-                }}
-              >
-                📎
-                <input
-                  type="file"
-                  style={{
-                    display:
-                      "none",
-                  }}
-                  onChange={(
-                    e
-                  ) =>
-                    setPrivateFile(
-                      e.target
-                        .files?.[0] ||
-                      null
-                    )
-                  }
-                />
-              </label>
-
-              <input
-                value={
-                  privateText
-                }
-                onChange={(
-                  e
-                ) =>
-                  setPrivateText(
-                    e.target
-                      .value
-                  )
-                }
-                onKeyDown={(
-                  e
-                ) => {
-                  if (
-                    e.key ===
-                      "Enter" &&
-                    !e.shiftKey &&
-                    !sending
-                  ) {
-                    e.preventDefault();
-
-                    void sendPrivateMessage();
-                  }
-                }}
-                placeholder="Write a private message..."
-                maxLength={5000}
-                style={{
-                  flex:
-                    1,
-                  minWidth:
-                    0,
-                }}
-              />
-
-              <button
-                type="button"
-                onClick={() =>
-                  void sendPrivateMessage()
-                }
-                disabled={
-                  sending
-                }
-              >
-                {sending
-                  ? "..."
-                  : "Send"}
-              </button>
-            </div>
-          </section>
-        )}
-
-      {/* PUBLIC CHAT */}
-      <section className="chat">
-        {messages.map(
+/*
+ * PUBLIC MESSAGES
+ */
+function PublicMessages({
+  messages,
+  openFile,
+  downloadFile,
+}: {
+  messages: any[];
+  openFile: (
+    path: string
+  ) => Promise<void>;
+  downloadFile: (
+    path: string,
+    name: string
+  ) => Promise<void>;
+}) {
+  return (
+    <section
+      style={{
+        maxHeight:
+          "55vh",
+        overflowY:
+          "auto",
+        padding:
+          "5px",
+      }}
+    >
+      {messages.length ===
+      0 ? (
+        <div
+          style={{
+            padding:
+              "25px",
+            textAlign:
+              "center",
+            opacity:
+              0.6,
+          }}
+        >
+          No messages yet.
+        </div>
+      ) : (
+        messages.map(
           (m, i) => {
             const attachment =
               m.attachment;
@@ -3784,15 +3812,22 @@ export default function App() {
 
             return (
               <article
-                className={
-                  m.sender ===
-                  "Academic Hunters AI"
-                    ? "msg ai"
-                    : "msg"
-                }
                 key={
-                  m.id ?? i
+                  m.id || i
                 }
+                style={{
+                  padding:
+                    "13px",
+                  marginBottom:
+                    "9px",
+                  borderRadius:
+                    "13px",
+                  background:
+                    m.sender ===
+                    "Academic Hunters AI"
+                      ? "rgba(80,120,255,.16)"
+                      : "rgba(255,255,255,.07)",
+                }}
               >
                 <b>
                   {m.sender ||
@@ -3805,6 +3840,8 @@ export default function App() {
                       "pre-wrap",
                     overflowWrap:
                       "anywhere",
+                    margin:
+                      "7px 0",
                   }}
                 >
                   {m.text ||
@@ -3821,8 +3858,6 @@ export default function App() {
                         "8px",
                       flexWrap:
                         "wrap",
-                      marginTop:
-                        "8px",
                     }}
                   >
                     <button
@@ -3857,7 +3892,7 @@ export default function App() {
                   <small
                     style={{
                       opacity:
-                        0.6,
+                        0.5,
                     }}
                   >
                     {new Date(
@@ -3868,31 +3903,600 @@ export default function App() {
               </article>
             );
           }
-        )}
-      </section>
+        )
+      )}
+    </section>
+  );
+}
 
-      {/* PUBLIC FILE PREVIEW */}
+/*
+ * COMPOSER
+ */
+function Composer({
+  text,
+  setText,
+  file,
+  setFile,
+  sending,
+  placeholder,
+  onSend,
+  hideFile = false,
+}: {
+  text: string;
+  setText: (
+    value: string
+  ) => void;
+  file: File | null;
+  setFile: (
+    value: File | null
+  ) => void;
+  sending: boolean;
+  placeholder: string;
+  onSend: () => void;
+  hideFile?: boolean;
+}) {
+  return (
+    <div
+      style={{
+        marginTop:
+          "12px",
+        padding:
+          "9px",
+        display:
+          "flex",
+        gap:
+          "8px",
+        alignItems:
+          "center",
+        background:
+          "rgba(255,255,255,.07)",
+        borderRadius:
+          "14px",
+      }}
+    >
+      {!hideFile && (
+        <label
+          style={{
+            cursor:
+              "pointer",
+            fontSize:
+              "20px",
+          }}
+        >
+          📎
+          <input
+            type="file"
+            style={{
+              display:
+                "none",
+            }}
+            onChange={(e) =>
+              setFile(
+                e.target
+                  .files?.[0] ||
+                null
+              )
+            }
+          />
+        </label>
+      )}
+
+      <input
+        value={text}
+        onChange={(e) =>
+          setText(
+            e.target.value
+          )
+        }
+        onKeyDown={(e) => {
+          if (
+            e.key ===
+              "Enter" &&
+            !e.shiftKey &&
+            !sending
+          ) {
+            e.preventDefault();
+            onSend();
+          }
+        }}
+        placeholder={
+          placeholder
+        }
+        maxLength={5000}
+        style={{
+          flex: 1,
+          minWidth: 0,
+          padding:
+            "12px",
+          borderRadius:
+            "10px",
+          border:
+            "1px solid rgba(255,255,255,.1)",
+        }}
+      />
+
+      <button
+        onClick={
+          onSend
+        }
+        disabled={
+          sending
+        }
+      >
+        {sending
+          ? "..."
+          : "Send"}
+      </button>
+
       {file && (
+        <button
+          type="button"
+          onClick={() =>
+            setFile(null)
+          }
+          title="Remove file"
+        >
+          ✕
+        </button>
+      )}
+    </div>
+  );
+}
+
+/*
+ * MEMBER CARD
+ */
+function MemberCard({
+  member,
+  online,
+  calling,
+  busy,
+  privateLoading,
+  onChat,
+  onVoice,
+  onVideo,
+}: {
+  member: Member;
+  online: boolean;
+  calling: boolean;
+  busy: boolean;
+  privateLoading: boolean;
+  onChat: () => void;
+  onVoice: () => void;
+  onVideo: () => void;
+}) {
+  return (
+    <div
+      style={{
+        padding:
+          "15px",
+        borderRadius:
+          "15px",
+        background:
+          "rgba(255,255,255,.07)",
+        border:
+          "1px solid rgba(255,255,255,.08)",
+      }}
+    >
+      <div
+        style={{
+          display:
+            "flex",
+          gap:
+            "11px",
+          alignItems:
+            "center",
+        }}
+      >
+        {member.avatar_url ? (
+          <img
+            src={
+              member.avatar_url
+            }
+            alt=""
+            style={{
+              width:
+                "48px",
+              height:
+                "48px",
+              borderRadius:
+                "50%",
+              objectFit:
+                "cover",
+            }}
+          />
+        ) : (
+          <div
+            style={{
+              width:
+                "48px",
+              height:
+                "48px",
+              borderRadius:
+                "50%",
+              display:
+                "flex",
+              alignItems:
+                "center",
+              justifyContent:
+                "center",
+              background:
+                "rgba(255,255,255,.12)",
+              fontSize:
+                "22px",
+            }}
+          >
+            👤
+          </div>
+        )}
+
+        <div>
+          <div>
+            <span
+              style={{
+                color:
+                  online
+                    ? "#31d158"
+                    : "#888",
+              }}
+            >
+              ●
+            </span>{" "}
+            <b>
+              {member.display_name ||
+                "Academic Hunters member"}
+            </b>
+          </div>
+
+          <small
+            style={{
+              opacity:
+                0.55,
+            }}
+          >
+            {online
+              ? "Online"
+              : "Offline"}
+          </small>
+        </div>
+      </div>
+
+      <div
+        style={{
+          display:
+            "flex",
+          gap:
+            "7px",
+          flexWrap:
+            "wrap",
+          marginTop:
+            "12px",
+        }}
+      >
+        <button
+          onClick={
+            onChat
+          }
+          disabled={
+            privateLoading
+          }
+        >
+          💬 Chat
+        </button>
+
+        <button
+          onClick={
+            onVoice
+          }
+          disabled={
+            busy
+          }
+        >
+          {calling
+            ? "Calling..."
+            : "📞 Voice"}
+        </button>
+
+        <button
+          onClick={
+            onVideo
+          }
+          disabled={
+            busy
+          }
+        >
+          🎥 Video
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/*
+ * PRIVATE CHAT
+ */
+function PrivateChat({
+  selectedMember,
+  privateMessages,
+  privateText,
+  setPrivateText,
+  privateFile,
+  setPrivateFile,
+  privateLoading,
+  sending,
+  user,
+  onlineUsers,
+  closePrivateChat,
+  sendPrivateMessage,
+  deletePrivateMessage,
+  openPrivateFile,
+  downloadPrivateFile,
+}: {
+  selectedMember: Member;
+  conversationId: string;
+  privateMessages: PrivateMessage[];
+  privateText: string;
+  setPrivateText: (
+    value: string
+  ) => void;
+  privateFile: File | null;
+  setPrivateFile: (
+    value: File | null
+  ) => void;
+  privateLoading: boolean;
+  sending: boolean;
+  user: any;
+  onlineUsers: Record<
+    string,
+    boolean
+  >;
+  closePrivateChat: () => void;
+  sendPrivateMessage: () => Promise<void>;
+  deletePrivateMessage: (
+    id: string,
+    filePath?: string | null
+  ) => Promise<void>;
+  openPrivateFile: (
+    path: string
+  ) => Promise<void>;
+  downloadPrivateFile: (
+    path: string,
+    name: string
+  ) => Promise<void>;
+}) {
+  return (
+    <section
+      style={{
+        borderRadius:
+          "18px",
+        background:
+          "rgba(255,255,255,.07)",
+        border:
+          "1px solid rgba(255,255,255,.1)",
+        overflow:
+          "hidden",
+      }}
+    >
+      <div
+        style={{
+          padding:
+            "15px",
+          display:
+            "flex",
+          justifyContent:
+            "space-between",
+          alignItems:
+            "center",
+          borderBottom:
+            "1px solid rgba(255,255,255,.08)",
+        }}
+      >
+        <div>
+          <b>
+            💬 Private Chat
+          </b>
+
+          <div
+            style={{
+              marginTop:
+                "4px",
+            }}
+          >
+            <span
+              style={{
+                color:
+                  onlineUsers[
+                    selectedMember.id
+                  ]
+                    ? "#31d158"
+                    : "#888",
+              }}
+            >
+              ●
+            </span>{" "}
+            {selectedMember.display_name ||
+              "Academic Hunters member"}
+          </div>
+        </div>
+
+        <button
+          onClick={
+            closePrivateChat
+          }
+        >
+          ✕
+        </button>
+      </div>
+
+      <div
+        style={{
+          height:
+            "55vh",
+          overflowY:
+            "auto",
+          padding:
+            "12px",
+        }}
+      >
+        {privateLoading ? (
+          <p>
+            Loading private messages...
+          </p>
+        ) : privateMessages.length ===
+          0 ? (
+          <p
+            style={{
+              opacity:
+                0.6,
+            }}
+          >
+            No private messages yet.
+            Start the conversation.
+          </p>
+        ) : (
+          privateMessages.map(
+            (m) => (
+              <article
+                key={
+                  m.id
+                }
+                style={{
+                  padding:
+                    "11px",
+                  marginBottom:
+                    "8px",
+                  borderRadius:
+                    "11px",
+                  background:
+                    m.sender_id ===
+                    user?.id
+                      ? "rgba(0,128,105,.25)"
+                      : "rgba(255,255,255,.09)",
+                }}
+              >
+                <div
+                  style={{
+                    display:
+                      "flex",
+                    justifyContent:
+                      "space-between",
+                  }}
+                >
+                  <b>
+                    {m.sender_id ===
+                    user?.id
+                      ? "You"
+                      : selectedMember.display_name ||
+                        "Member"}
+                  </b>
+
+                  {m.sender_id ===
+                    user?.id && (
+                    <button
+                      onClick={() =>
+                        void deletePrivateMessage(
+                          m.id,
+                          m.file_path
+                        )
+                      }
+                      style={{
+                        fontSize:
+                          "11px",
+                      }}
+                    >
+                      🗑️
+                    </button>
+                  )}
+                </div>
+
+                <p
+                  style={{
+                    whiteSpace:
+                      "pre-wrap",
+                    overflowWrap:
+                      "anywhere",
+                  }}
+                >
+                  {m.content}
+                </p>
+
+                {m.file_path && (
+                  <div
+                    style={{
+                      display:
+                        "flex",
+                      gap:
+                        "7px",
+                      flexWrap:
+                        "wrap",
+                    }}
+                  >
+                    <button
+                      onClick={() =>
+                        void openPrivateFile(
+                          m.file_path!
+                        )
+                      }
+                    >
+                      📂 Open{" "}
+                      {
+                        m.file_name
+                      }
+                    </button>
+
+                    <button
+                      onClick={() =>
+                        void downloadPrivateFile(
+                          m.file_path!,
+                          m.file_name ||
+                            "file"
+                        )
+                      }
+                    >
+                      ⬇️ Download
+                    </button>
+                  </div>
+                )}
+
+                <small
+                  style={{
+                    opacity:
+                      0.55,
+                  }}
+                >
+                  {new Date(
+                    m.created_at
+                  ).toLocaleString()}
+
+                  {m.sender_id ===
+                    user?.id &&
+                    m.read_at
+                    ? " • ✓✓ Read"
+                    : ""}
+                </small>
+              </article>
+            )
+          )
+        )}
+      </div>
+
+      {privateFile && (
         <div
           style={{
             padding:
-              "8px",
-            marginTop:
-              "8px",
-            borderRadius:
-              "8px",
+              "8px 12px",
             background:
-              "rgba(255,255,255,.08)",
-            overflowWrap:
-              "anywhere",
+              "rgba(255,255,255,.05)",
           }}
         >
-          📎 {file.name}
+          📎{" "}
+          {privateFile.name}
 
           <button
-            type="button"
             onClick={() =>
-              setFile(null)
+              setPrivateFile(
+                null
+              )
             }
             style={{
               marginLeft:
@@ -3904,27 +4508,48 @@ export default function App() {
         </div>
       )}
 
-      {/* PUBLIC COMPOSER */}
-      <div className="composer">
-        <label>
+      <div
+        style={{
+          display:
+            "flex",
+          gap:
+            "8px",
+          padding:
+            "10px",
+        }}
+      >
+        <label
+          style={{
+            cursor:
+              "pointer",
+            padding:
+              "10px",
+          }}
+        >
           📎
 
           <input
             type="file"
+            style={{
+              display:
+                "none",
+            }}
             onChange={(e) =>
-              setFile(
+              setPrivateFile(
                 e.target
                   .files?.[0] ||
-                  null
+                null
               )
             }
           />
         </label>
 
         <input
-          value={text}
+          value={
+            privateText
+          }
           onChange={(e) =>
-            setText(
+            setPrivateText(
               e.target.value
             )
           }
@@ -3936,51 +4561,36 @@ export default function App() {
               !sending
             ) {
               e.preventDefault();
-              void send();
+              void sendPrivateMessage();
             }
           }}
-          placeholder={
-            ai
-              ? "Ask Academic Hunters AI…"
-              : "Message Academic Hunters…"
-          }
+          placeholder="Write a private message..."
           maxLength={5000}
+          style={{
+            flex:
+              1,
+            minWidth:
+              0,
+            padding:
+              "11px",
+            borderRadius:
+              "10px",
+          }}
         />
 
         <button
           onClick={() =>
-            void send()
+            void sendPrivateMessage()
           }
           disabled={
             sending
           }
         >
           {sending
-            ? "Sending..."
+            ? "..."
             : "Send"}
         </button>
       </div>
-
-      {/* CALL */}
-      {call && (
-        <Call
-          room={
-            call.room
-          }
-          video={
-            call.video
-          }
-          initiator={
-            call.initiator
-          }
-          invitationId={
-            call.invitationId
-          }
-          onClose={
-            closeCall
-          }
-        />
-      )}
-    </main>
+    </section>
   );
 }
