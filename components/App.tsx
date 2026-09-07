@@ -18,6 +18,15 @@ type IncomingCall = {
   video: boolean;
 };
 
+type PrivateMessage = {
+  id: string;
+  conversation_id: string;
+  sender_id: string;
+  content: string;
+  created_at: string;
+  read_at: string | null;
+};
+
 export default function App() {
   const sb = useRef(getSupabase()).current;
 
@@ -25,17 +34,33 @@ export default function App() {
   const [email, setEmail] = useState("");
   const [members, setMembers] = useState<any[]>([]);
   const [messages, setMessages] = useState<any[]>([]);
+  const [privateMessages, setPrivateMessages] =
+    useState<PrivateMessage[]>([]);
   const [text, setText] = useState("");
+  const [privateText, setPrivateText] = useState("");
   const [ai, setAi] = useState(false);
   const [file, setFile] = useState<File | null>(null);
-  const [call, setCall] = useState<CallState | null>(null);
+
+  const [call, setCall] =
+    useState<CallState | null>(null);
+
   const [incomingCall, setIncomingCall] =
     useState<IncomingCall | null>(null);
+
   const [toast, setToast] = useState("");
   const [online, setOnline] = useState(0);
   const [sending, setSending] = useState(false);
   const [callingMember, setCallingMember] =
     useState<string | null>(null);
+
+  const [selectedMember, setSelectedMember] =
+    useState<any | null>(null);
+
+  const [conversationId, setConversationId] =
+    useState<string | null>(null);
+
+  const [privateLoading, setPrivateLoading] =
+    useState(false);
 
   useEffect(() => {
     let mounted = true;
@@ -94,8 +119,7 @@ export default function App() {
       {
         config: {
           presence: {
-            key: Math.random()
-              .toString(36),
+            key: Math.random().toString(36),
           },
         },
       }
@@ -296,6 +320,253 @@ export default function App() {
     }
   }
 
+  async function openPrivateChat(
+    member: any
+  ) {
+    if (!user) {
+      setToast("Sign in first.");
+      return;
+    }
+
+    if (!member?.id) {
+      setToast("Member information is missing.");
+      return;
+    }
+
+    if (member.id === user.id) {
+      setToast("You cannot message yourself.");
+      return;
+    }
+
+    setPrivateLoading(true);
+    setToast("Opening private chat...");
+
+    try {
+      /*
+       * Use a predictable conversation ID based on
+       * the two users. This prevents creating a new
+       * conversation every time the same two members
+       * chat.
+       */
+      const ids = [user.id, member.id].sort();
+
+      const stableConversationId =
+        await makeConversationId(
+          ids[0],
+          ids[1]
+        );
+
+      const conversationInsert =
+        await sb
+          .from("conversations")
+          .insert({
+            id: stableConversationId,
+          });
+
+      /*
+       * A duplicate means the conversation already
+       * exists, which is fine.
+       */
+      if (
+        conversationInsert.error &&
+        !conversationInsert.error.message
+          .toLowerCase()
+          .includes("duplicate")
+      ) {
+        setToast(
+          conversationInsert.error.message
+        );
+        return;
+      }
+
+      const membersInsert =
+        await sb
+          .from("conversation_members")
+          .upsert(
+            [
+              {
+                conversation_id:
+                  stableConversationId,
+                user_id: user.id,
+              },
+              {
+                conversation_id:
+                  stableConversationId,
+                user_id: member.id,
+              },
+            ],
+            {
+              onConflict:
+                "conversation_id,user_id",
+            }
+          );
+
+      if (membersInsert.error) {
+        setToast(
+          membersInsert.error.message
+        );
+        return;
+      }
+
+      setSelectedMember(member);
+      setConversationId(
+        stableConversationId
+      );
+
+      await loadPrivateMessages(
+        stableConversationId
+      );
+
+      setToast(
+        `Private chat with ${
+          member.display_name ||
+          "member"
+        } opened`
+      );
+    } finally {
+      setPrivateLoading(false);
+    }
+  }
+
+  async function makeConversationId(
+    first: string,
+    second: string
+  ) {
+    const value =
+      `academic-hunters:${first}:${second}`;
+
+    const encoder =
+      new TextEncoder();
+
+    const bytes =
+      encoder.encode(value);
+
+    const hash =
+      await crypto.subtle.digest(
+        "SHA-256",
+        bytes
+      );
+
+    const hashArray =
+      Array.from(
+        new Uint8Array(hash)
+      );
+
+    const hex =
+      hashArray
+        .map((b) =>
+          b.toString(16).padStart(2, "0")
+        )
+        .join("");
+
+    /*
+     * UUID format from the SHA-256 hash.
+     */
+    return [
+      hex.slice(0, 8),
+      hex.slice(8, 12),
+      hex.slice(12, 16),
+      hex.slice(16, 20),
+      hex.slice(20, 32),
+    ].join("-");
+  }
+
+  async function loadPrivateMessages(
+    id: string
+  ) {
+    setPrivateLoading(true);
+
+    const { data, error } =
+      await sb
+        .from("private_messages")
+        .select(
+          "id,conversation_id,sender_id,content,created_at,read_at"
+        )
+        .eq(
+          "conversation_id",
+          id
+        )
+        .order("created_at", {
+          ascending: true,
+        })
+        .limit(200);
+
+    if (error) {
+      setToast(error.message);
+      setPrivateLoading(false);
+      return;
+    }
+
+    setPrivateMessages(
+      data || []
+    );
+
+    setPrivateLoading(false);
+
+    /*
+     * Mark messages from the other member as read.
+     */
+    if (user) {
+      await sb
+        .from("private_messages")
+        .update({
+          read_at:
+            new Date().toISOString(),
+        })
+        .eq(
+          "conversation_id",
+          id
+        )
+        .neq(
+          "sender_id",
+          user.id
+        )
+        .is("read_at", null);
+    }
+  }
+
+  async function sendPrivateMessage() {
+    if (!user) {
+      setToast("Sign in first.");
+      return;
+    }
+
+    if (!conversationId) {
+      setToast("Open a private chat first.");
+      return;
+    }
+
+    const value =
+      privateText.trim();
+
+    if (!value) {
+      return;
+    }
+
+    setSending(true);
+
+    const { error } =
+      await sb
+        .from("private_messages")
+        .insert({
+          conversation_id:
+            conversationId,
+          sender_id:
+            user.id,
+          content:
+            value,
+        });
+
+    if (error) {
+      setToast(error.message);
+      setSending(false);
+      return;
+    }
+
+    setPrivateText("");
+    setSending(false);
+  }
+
   async function startMemberCall(
     member: any,
     video: boolean
@@ -351,9 +622,10 @@ export default function App() {
     }
 
     setToast(
-      video
-        ? `Calling ${member.display_name || "member"}...`
-        : `Calling ${member.display_name || "member"}...`
+      `Calling ${
+        member.display_name ||
+        "member"
+      }...`
     );
   }
 
@@ -371,7 +643,10 @@ export default function App() {
         .update({
           status: "accepted",
         })
-        .eq("id", accepted.id);
+        .eq(
+          "id",
+          accepted.id
+        );
 
     if (error) {
       setToast(error.message);
@@ -421,22 +696,30 @@ export default function App() {
     );
   }
 
-  async function openFile(path: string) {
+  async function openFile(
+    path: string
+  ) {
     if (!user) {
       setToast("Sign in first.");
       return;
     }
 
     if (!path) {
-      setToast("File path is missing.");
+      setToast(
+        "File path is missing."
+      );
       return;
     }
 
-    setToast("Preparing file...");
+    setToast(
+      "Preparing file..."
+    );
 
     const { data, error } =
       await sb.storage
-        .from("gosnaps-files")
+        .from(
+          "gosnaps-files"
+        )
         .createSignedUrl(
           path,
           3600
@@ -459,7 +742,9 @@ export default function App() {
       "noopener,noreferrer"
     );
 
-    setToast("File opened.");
+    setToast(
+      "File opened."
+    );
   }
 
   async function downloadFile(
@@ -472,15 +757,21 @@ export default function App() {
     }
 
     if (!path) {
-      setToast("File path is missing.");
+      setToast(
+        "File path is missing."
+      );
       return;
     }
 
-    setToast("Preparing download...");
+    setToast(
+      "Preparing download..."
+    );
 
     const { data, error } =
       await sb.storage
-        .from("gosnaps-files")
+        .from(
+          "gosnaps-files"
+        )
         .createSignedUrl(
           path,
           3600,
@@ -502,7 +793,9 @@ export default function App() {
     }
 
     const link =
-      document.createElement("a");
+      document.createElement(
+        "a"
+      );
 
     link.href =
       data.signedUrl;
@@ -511,9 +804,12 @@ export default function App() {
       name ||
       "Academic-Hunters-file";
 
-    link.target = "_blank";
+    link.target =
+      "_blank";
 
-    document.body.appendChild(link);
+    document.body.appendChild(
+      link
+    );
 
     link.click();
 
@@ -528,7 +824,8 @@ export default function App() {
     if (sending) return;
 
     if (ai) {
-      const q = text.trim();
+      const q =
+        text.trim();
 
       if (!q) return;
 
@@ -536,36 +833,40 @@ export default function App() {
       setText("");
 
       try {
-        const r = await fetch(
-          "/api/chat",
-          {
-            method: "POST",
-            headers: {
-              "Content-Type":
-                "application/json",
+        const r =
+          await fetch(
+            "/api/chat",
+            {
+              method: "POST",
+              headers: {
+                "Content-Type":
+                  "application/json",
+              },
+              body: JSON.stringify({
+                message: q,
+              }),
+            }
+          );
+
+        const d =
+          await r.json();
+
+        setMessages(
+          (old) => [
+            ...old,
+            {
+              id: Date.now(),
+              sender:
+                "Academic Hunters AI",
+              text:
+                d.reply ||
+                d.error ||
+                "AI could not respond.",
+              created_at:
+                new Date().toISOString(),
             },
-            body: JSON.stringify({
-              message: q,
-            }),
-          }
+          ]
         );
-
-        const d = await r.json();
-
-        setMessages((old) => [
-          ...old,
-          {
-            id: Date.now(),
-            sender:
-              "Academic Hunters AI",
-            text:
-              d.reply ||
-              d.error ||
-              "AI could not respond.",
-            created_at:
-              new Date().toISOString(),
-          },
-        ]);
       } catch {
         setToast(
           "AI connection failed."
@@ -578,7 +879,9 @@ export default function App() {
     }
 
     if (!user) {
-      setToast("Sign in first.");
+      setToast(
+        "Sign in first."
+      );
       return;
     }
 
@@ -612,7 +915,9 @@ export default function App() {
 
         const upload =
           await sb.storage
-            .from("gosnaps-files")
+            .from(
+              "gosnaps-files"
+            )
             .upload(
               path,
               file
@@ -625,15 +930,19 @@ export default function App() {
           return;
         }
 
-        attachmentPath = path;
+        attachmentPath =
+          path;
+
         attachmentName =
           file.name;
       }
 
       const message = {
-        sender_id: user.id,
+        sender_id:
+          user.id,
 
-        receiver_id: null,
+        receiver_id:
+          null,
 
         sender:
           user.email ||
@@ -665,7 +974,9 @@ export default function App() {
       const result =
         await sb
           .from("messages")
-          .insert(message);
+          .insert(
+            message
+          );
 
       if (result.error) {
         setToast(
@@ -687,10 +998,19 @@ export default function App() {
     }
   }
 
+  function closePrivateChat() {
+    setSelectedMember(null);
+    setConversationId(null);
+    setPrivateMessages([]);
+    setPrivateText("");
+  }
+
   function closeCall() {
     setCall(null);
     setCallingMember(null);
-    setToast("Call ended.");
+    setToast(
+      "Call ended."
+    );
   }
 
   return (
@@ -698,7 +1018,9 @@ export default function App() {
       <header>
         <div className="logo">
           ACADEMIC{" "}
-          <span>HUNTERS</span>
+          <span>
+            HUNTERS
+          </span>
         </div>
 
         <div className="live">
@@ -745,7 +1067,9 @@ export default function App() {
       ) : (
         <div className="welcome">
           Signed in as{" "}
-          <b>{user.email}</b>
+          <b>
+            {user.email}
+          </b>
         </div>
       )}
 
@@ -785,11 +1109,10 @@ export default function App() {
               return;
             }
 
-            setToast(
-              "Open Members and choose a member to call."
-            );
-
             loadMembers();
+            setToast(
+              "Choose a member to call."
+            );
           }}
         >
           📞 Voice
@@ -804,18 +1127,19 @@ export default function App() {
               return;
             }
 
-            setToast(
-              "Open Members and choose a member to call."
-            );
-
             loadMembers();
+            setToast(
+              "Choose a member to call."
+            );
           }}
         >
           🎥 Video
         </button>
 
         <button
-          onClick={loadMembers}
+          onClick={
+            loadMembers
+          }
         >
           👥 Members
         </button>
@@ -842,28 +1166,36 @@ export default function App() {
 
           <p>
             <b>
-              {incomingCall.caller_name}
+              {
+                incomingCall.caller_name
+              }
             </b>{" "}
             is calling you.
           </p>
 
           <div
             style={{
-              display: "flex",
+              display:
+                "flex",
               gap: "10px",
-              flexWrap: "wrap",
+              flexWrap:
+                "wrap",
             }}
           >
             <button
               type="button"
-              onClick={acceptCall}
+              onClick={
+                acceptCall
+              }
             >
               ✅ Accept
             </button>
 
             <button
               type="button"
-              onClick={rejectCall}
+              onClick={
+                rejectCall
+              }
             >
               ❌ Decline
             </button>
@@ -881,18 +1213,19 @@ export default function App() {
             .filter(
               (m) =>
                 !user ||
-                m.id !== user.id
+                m.id !==
+                  user.id
             )
             .map((m) => (
               <div
                 key={m.id}
                 style={{
                   padding:
-                    "10px",
+                    "12px",
                   marginBottom:
-                    "8px",
-                  borderRadius:
                     "10px",
+                  borderRadius:
+                    "12px",
                   background:
                     "rgba(255,255,255,.08)",
                 }}
@@ -907,13 +1240,28 @@ export default function App() {
                   style={{
                     display:
                       "flex",
-                    gap: "8px",
-                    marginTop:
+                    gap:
                       "8px",
+                    marginTop:
+                      "9px",
                     flexWrap:
                       "wrap",
                   }}
                 >
+                  <button
+                    type="button"
+                    disabled={
+                      privateLoading
+                    }
+                    onClick={() =>
+                      openPrivateChat(
+                        m
+                      )
+                    }
+                  >
+                    💬 Chat
+                  </button>
+
                   <button
                     type="button"
                     disabled={
@@ -953,6 +1301,184 @@ export default function App() {
             ))}
         </aside>
       )}
+
+      {selectedMember &&
+        conversationId && (
+          <section
+            className="private-chat"
+            style={{
+              marginTop:
+                "15px",
+              padding:
+                "14px",
+              borderRadius:
+                "14px",
+              background:
+                "rgba(255,255,255,.08)",
+            }}
+          >
+            <div
+              style={{
+                display:
+                  "flex",
+                justifyContent:
+                  "space-between",
+                alignItems:
+                  "center",
+                gap: "10px",
+                marginBottom:
+                  "12px",
+              }}
+            >
+              <div>
+                <b>
+                  💬 Private chat
+                </b>
+
+                <div>
+                  {
+                    selectedMember.display_name ||
+                    "Academic Hunters member"
+                  }
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={
+                  closePrivateChat
+                }
+              >
+                ✕
+              </button>
+            </div>
+
+            <div
+              style={{
+                maxHeight:
+                  "320px",
+                overflowY:
+                  "auto",
+                padding:
+                  "5px",
+              }}
+            >
+              {privateLoading ? (
+                <p>
+                  Loading private messages...
+                </p>
+              ) : privateMessages.length ===
+                0 ? (
+                <p>
+                  No private messages yet.
+                  Start the conversation.
+                </p>
+              ) : (
+                privateMessages.map(
+                  (m) => (
+                    <article
+                      key={
+                        m.id
+                      }
+                      style={{
+                        padding:
+                          "9px 11px",
+                        marginBottom:
+                          "8px",
+                        borderRadius:
+                          "10px",
+                        background:
+                          m.sender_id ===
+                          user?.id
+                            ? "rgba(0,128,105,.25)"
+                            : "rgba(255,255,255,.10)",
+                      }}
+                    >
+                      <b>
+                        {m.sender_id ===
+                        user?.id
+                          ? "You"
+                          : selectedMember.display_name ||
+                            "Member"}
+                      </b>
+
+                      <p>
+                        {
+                          m.content
+                        }
+                      </p>
+
+                      <small>
+                        {new Date(
+                          m.created_at
+                        ).toLocaleString()}
+                        {m.sender_id ===
+                          user?.id &&
+                          m.read_at
+                          ? " • ✓ Read"
+                          : ""}
+                      </small>
+                    </article>
+                  )
+                )
+              )}
+            </div>
+
+            <div
+              style={{
+                display:
+                  "flex",
+                gap:
+                  "8px",
+                marginTop:
+                  "10px",
+              }}
+            >
+              <input
+                value={
+                  privateText
+                }
+                onChange={(
+                  e
+                ) =>
+                  setPrivateText(
+                    e.target
+                      .value
+                  )
+                }
+                onKeyDown={(
+                  e
+                ) => {
+                  if (
+                    e.key ===
+                      "Enter" &&
+                    !sending
+                  ) {
+                    sendPrivateMessage();
+                  }
+                }}
+                placeholder="Write a private message..."
+                style={{
+                  flex: 1,
+                }}
+              />
+
+              <button
+                type="button"
+                onClick={
+                  sendPrivateMessage
+                }
+                disabled={
+                  sending
+                }
+              >
+                {sending
+                  ? "..."
+                  : "Send"}
+              </button>
+            </div>
+          </section>
+        )}
 
       <section className="chat">
         {messages.map(
@@ -1000,7 +1526,8 @@ export default function App() {
                     style={{
                       display:
                         "flex",
-                      gap: "8px",
+                      gap:
+                        "8px",
                       flexWrap:
                         "wrap",
                       marginTop:
@@ -1048,7 +1575,8 @@ export default function App() {
             type="file"
             onChange={(e) =>
               setFile(
-                e.target.files?.[0] ||
+                e.target
+                  .files?.[0] ||
                   null
               )
             }
@@ -1064,7 +1592,8 @@ export default function App() {
           }
           onKeyDown={(e) => {
             if (
-              e.key === "Enter" &&
+              e.key ===
+                "Enter" &&
               !sending
             ) {
               send();
@@ -1079,7 +1608,9 @@ export default function App() {
 
         <button
           onClick={send}
-          disabled={sending}
+          disabled={
+            sending
+          }
         >
           {sending
             ? "Sending..."
@@ -1089,8 +1620,12 @@ export default function App() {
 
       {call && (
         <Call
-          room={call.room}
-          video={call.video}
+          room={
+            call.room
+          }
+          video={
+            call.video
+          }
           initiator={
             call.initiator
           }
