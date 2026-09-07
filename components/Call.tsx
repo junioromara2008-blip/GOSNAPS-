@@ -1,25 +1,328 @@
 "use client";
-import {useEffect,useRef,useState} from "react";
-import {getSupabase} from "@/lib/supabase";
-export default function Call({room,video,onClose}:{room:string;video:boolean;onClose:()=>void}){
- const sb=useRef(getSupabase()).current,pc=useRef<RTCPeerConnection|null>(null),ch=useRef<any>(null);
- const local=useRef<HTMLVideoElement>(null),remote=useRef<HTMLVideoElement>(null);const [status,setStatus]=useState("Starting…");
- useEffect(()=>{let active=true;
-  (async()=>{
-   try{
-    const stream=await navigator.mediaDevices.getUserMedia({audio:true,video});
-    if(!active)return;if(local.current)local.current.srcObject=stream;
-    const conn=new RTCPeerConnection({iceServers:[{urls:"stun:stun.l.google.com:19302"}]});pc.current=conn;
-    stream.getTracks().forEach(t=>conn.addTrack(t,stream));conn.ontrack=e=>{if(remote.current)remote.current.srcObject=e.streams[0]};
-    ch.current=sb.channel("call:"+room);
-    conn.onicecandidate=e=>e.candidate&&ch.current?.send({type:"broadcast",event:"ice",payload:e.candidate});
-    ch.current.on("broadcast",{event:"offer"},async({payload}:any)=>{await conn.setRemoteDescription(payload);const a=await conn.createAnswer();await conn.setLocalDescription(a);ch.current.send({type:"broadcast",event:"answer",payload:a})});
-    ch.current.on("broadcast",{event:"answer"},async({payload}:any)=>await conn.setRemoteDescription(payload));
-    ch.current.on("broadcast",{event:"ice"},async({payload}:any)=>{try{await conn.addIceCandidate(payload)}catch{}});
-    ch.current.subscribe(async(s:any)=>{if(s==="SUBSCRIBED"){setStatus("Waiting for the other member…");const o=await conn.createOffer();await conn.setLocalDescription(o);ch.current.send({type:"broadcast",event:"offer",payload:o})}});
-   }catch(e:any){setStatus(e.message||"Camera/microphone permission failed.")}
-  })();
-  return()=>{active=false;pc.current?.close();if(ch.current)sb.removeChannel(ch.current)}
- },[room,video,sb]);
- return <div className="call"><div className="callhead"><b>{video?"🎥 Video call":"📞 Voice call"}</b><span>{status}</span><button onClick={onClose}>End</button></div><div className="videos"><video ref={remote} autoPlay playsInline/><video ref={local} autoPlay muted playsInline/></div><div className="room">Call room: <b>{room}</b><br/><small>For this starter, the other member must open the same room.</small></div></div>
+
+import { useEffect, useRef, useState } from "react";
+import { getSupabase } from "@/lib/supabase";
+
+type CallProps = {
+  room: string;
+  video: boolean;
+  initiator?: boolean;
+  onClose: () => void;
+};
+
+export default function Call({
+  room,
+  video,
+  initiator = true,
+  onClose,
+}: CallProps) {
+  const sb = useRef(getSupabase()).current;
+
+  const pc = useRef<RTCPeerConnection | null>(
+    null
+  );
+
+  const channel = useRef<any>(null);
+
+  const localVideo =
+    useRef<HTMLVideoElement>(null);
+
+  const remoteVideo =
+    useRef<HTMLVideoElement>(null);
+
+  const localStream =
+    useRef<MediaStream | null>(null);
+
+  const [status, setStatus] =
+    useState("Starting call…");
+
+  useEffect(() => {
+    let active = true;
+
+    async function start() {
+      try {
+        const stream =
+          await navigator.mediaDevices.getUserMedia(
+            {
+              audio: true,
+              video,
+            }
+          );
+
+        if (!active) {
+          stream
+            .getTracks()
+            .forEach((track) =>
+              track.stop()
+            );
+          return;
+        }
+
+        localStream.current = stream;
+
+        if (localVideo.current) {
+          localVideo.current.srcObject =
+            stream;
+        }
+
+        const connection =
+          new RTCPeerConnection({
+            iceServers: [
+              {
+                urls:
+                  "stun:stun.l.google.com:19302",
+              },
+              {
+                urls:
+                  "stun:stun1.l.google.com:19302",
+              },
+            ],
+          });
+
+        pc.current = connection;
+
+        stream
+          .getTracks()
+          .forEach((track) => {
+            connection.addTrack(
+              track,
+              stream
+            );
+          });
+
+        connection.ontrack = (event) => {
+          if (
+            remoteVideo.current &&
+            event.streams[0]
+          ) {
+            remoteVideo.current.srcObject =
+              event.streams[0];
+          }
+        };
+
+        channel.current =
+          sb.channel(`call:${room}`);
+
+        connection.onicecandidate = (
+          event
+        ) => {
+          if (
+            event.candidate &&
+            channel.current
+          ) {
+            channel.current.send({
+              type: "broadcast",
+              event: "ice",
+              payload:
+                event.candidate,
+            });
+          }
+        };
+
+        channel.current.on(
+          "broadcast",
+          {
+            event: "offer",
+          },
+          async ({
+            payload,
+          }: any) => {
+            if (initiator) return;
+
+            try {
+              await connection.setRemoteDescription(
+                payload
+              );
+
+              const answer =
+                await connection.createAnswer();
+
+              await connection.setLocalDescription(
+                answer
+              );
+
+              await channel.current.send({
+                type: "broadcast",
+                event: "answer",
+                payload: answer,
+              });
+
+              setStatus(
+                "Connected"
+              );
+            } catch {
+              setStatus(
+                "Could not answer the call."
+              );
+            }
+          }
+        );
+
+        channel.current.on(
+          "broadcast",
+          {
+            event: "answer",
+          },
+          async ({
+            payload,
+          }: any) => {
+            if (!initiator) return;
+
+            try {
+              await connection.setRemoteDescription(
+                payload
+              );
+
+              setStatus(
+                "Connected"
+              );
+            } catch {
+              setStatus(
+                "Connection failed."
+              );
+            }
+          }
+        );
+
+        channel.current.on(
+          "broadcast",
+          {
+            event: "ice",
+          },
+          async ({
+            payload,
+          }: any) => {
+            try {
+              await connection.addIceCandidate(
+                payload
+              );
+            } catch {
+              // Ignore late ICE candidates.
+            }
+          }
+        );
+
+        channel.current.subscribe(
+          async (state: string) => {
+            if (
+              state !== "SUBSCRIBED"
+            ) {
+              return;
+            }
+
+            if (initiator) {
+              setStatus(
+                "Calling…"
+              );
+
+              const offer =
+                await connection.createOffer();
+
+              await connection.setLocalDescription(
+                offer
+              );
+
+              await channel.current.send({
+                type: "broadcast",
+                event: "offer",
+                payload: offer,
+              });
+            } else {
+              setStatus(
+                "Connecting…"
+              );
+            }
+          }
+        );
+      } catch (error: any) {
+        console.error(
+          "Call error:",
+          error
+        );
+
+        setStatus(
+          error?.message ||
+            "Microphone/camera permission failed."
+        );
+      }
+    }
+
+    start();
+
+    return () => {
+      active = false;
+
+      localStream.current
+        ?.getTracks()
+        .forEach((track) =>
+          track.stop()
+        );
+
+      pc.current?.close();
+
+      if (channel.current) {
+        sb.removeChannel(
+          channel.current
+        );
+      }
+    };
+  }, [
+    room,
+    video,
+    initiator,
+    sb,
+  ]);
+
+  function endCall() {
+    localStream.current
+      ?.getTracks()
+      .forEach((track) =>
+        track.stop()
+      );
+
+    pc.current?.close();
+
+    onClose();
+  }
+
+  return (
+    <div className="call">
+      <div className="callhead">
+        <b>
+          {video
+            ? "🎥 Video call"
+            : "📞 Voice call"}
+        </b>
+
+        <span>{status}</span>
+
+        <button
+          onClick={endCall}
+        >
+          End
+        </button>
+      </div>
+
+      <div className="videos">
+        <video
+          ref={remoteVideo}
+          autoPlay
+          playsInline
+        />
+
+        <video
+          ref={localVideo}
+          autoPlay
+          muted
+          playsInline
+        />
+      </div>
+
+      <div className="room">
+        {status === "Connected"
+          ? "Call connected"
+          : "Connecting to member…"}
+      </div>
+    </div>
+  );
 }
