@@ -4,6 +4,20 @@ import { useEffect, useRef, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import Call from "./Call";
 
+type CallState = {
+  room: string;
+  video: boolean;
+  initiator: boolean;
+};
+
+type IncomingCall = {
+  id: string;
+  caller_id: string;
+  caller_name: string;
+  room_id: string;
+  video: boolean;
+};
+
 export default function App() {
   const sb = useRef(getSupabase()).current;
 
@@ -14,10 +28,14 @@ export default function App() {
   const [text, setText] = useState("");
   const [ai, setAi] = useState(false);
   const [file, setFile] = useState<File | null>(null);
-  const [call, setCall] = useState<any>(null);
+  const [call, setCall] = useState<CallState | null>(null);
+  const [incomingCall, setIncomingCall] =
+    useState<IncomingCall | null>(null);
   const [toast, setToast] = useState("");
   const [online, setOnline] = useState(0);
   const [sending, setSending] = useState(false);
+  const [callingMember, setCallingMember] =
+    useState<string | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -104,6 +122,125 @@ export default function App() {
         }
       });
 
+    const calls = sb
+      .channel("gosnaps-call-invitations")
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "call_invitations",
+        },
+        async (payload) => {
+          if (!mounted) return;
+
+          const invitation = payload.new as any;
+
+          if (
+            !user ||
+            invitation.receiver_id !== user.id
+          ) {
+            return;
+          }
+
+          if (
+            invitation.status !== "ringing"
+          ) {
+            return;
+          }
+
+          let callerName =
+            "Academic Hunters member";
+
+          const { data: profile } =
+            await sb
+              .from("profiles")
+              .select("display_name")
+              .eq(
+                "id",
+                invitation.caller_id
+              )
+              .maybeSingle();
+
+          if (profile?.display_name) {
+            callerName =
+              profile.display_name;
+          }
+
+          setIncomingCall({
+            id: invitation.id,
+            caller_id:
+              invitation.caller_id,
+            caller_name:
+              callerName,
+            room_id:
+              invitation.room_id,
+            video:
+              invitation.video,
+          });
+
+          setToast(
+            invitation.video
+              ? "Incoming video call"
+              : "Incoming voice call"
+          );
+        }
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "call_invitations",
+        },
+        (payload) => {
+          if (!mounted || !user) {
+            return;
+          }
+
+          const invitation =
+            payload.new as any;
+
+          if (
+            invitation.caller_id !==
+            user.id
+          ) {
+            return;
+          }
+
+          if (
+            invitation.status ===
+            "accepted"
+          ) {
+            setCallingMember(null);
+
+            setCall({
+              room:
+                invitation.room_id,
+              video:
+                invitation.video,
+              initiator: true,
+            });
+
+            setToast(
+              "Call accepted. Connecting..."
+            );
+          }
+
+          if (
+            invitation.status ===
+            "rejected"
+          ) {
+            setCallingMember(null);
+
+            setToast(
+              "The member declined the call."
+            );
+          }
+        }
+      )
+      .subscribe();
+
     return () => {
       mounted = false;
 
@@ -111,8 +248,9 @@ export default function App() {
 
       sb.removeChannel(msg);
       sb.removeChannel(presence);
+      sb.removeChannel(calls);
     };
-  }, [sb]);
+  }, [sb, user]);
 
   async function login() {
     if (!email.trim()) {
@@ -156,6 +294,131 @@ export default function App() {
         `${data.length} member(s) found`
       );
     }
+  }
+
+  async function startMemberCall(
+    member: any,
+    video: boolean
+  ) {
+    if (!user) {
+      setToast(
+        "Sign in before calling."
+      );
+      return;
+    }
+
+    if (!member?.id) {
+      setToast(
+        "Member information is missing."
+      );
+      return;
+    }
+
+    if (member.id === user.id) {
+      setToast(
+        "You cannot call yourself."
+      );
+      return;
+    }
+
+    if (callingMember) {
+      setToast(
+        "A call is already being started."
+      );
+      return;
+    }
+
+    setCallingMember(member.id);
+
+    const room =
+      crypto.randomUUID();
+
+    const { error } =
+      await sb
+        .from("call_invitations")
+        .insert({
+          caller_id: user.id,
+          receiver_id: member.id,
+          room_id: room,
+          video,
+          status: "ringing",
+        });
+
+    if (error) {
+      setCallingMember(null);
+      setToast(error.message);
+      return;
+    }
+
+    setToast(
+      video
+        ? `Calling ${member.display_name || "member"}...`
+        : `Calling ${member.display_name || "member"}...`
+    );
+  }
+
+  async function acceptCall() {
+    if (!incomingCall) {
+      return;
+    }
+
+    const accepted =
+      incomingCall;
+
+    const { error } =
+      await sb
+        .from("call_invitations")
+        .update({
+          status: "accepted",
+        })
+        .eq("id", accepted.id);
+
+    if (error) {
+      setToast(error.message);
+      return;
+    }
+
+    setIncomingCall(null);
+
+    setCall({
+      room:
+        accepted.room_id,
+      video:
+        accepted.video,
+      initiator: false,
+    });
+
+    setToast(
+      "Call accepted. Connecting..."
+    );
+  }
+
+  async function rejectCall() {
+    if (!incomingCall) {
+      return;
+    }
+
+    const id =
+      incomingCall.id;
+
+    const { error } =
+      await sb
+        .from("call_invitations")
+        .update({
+          status: "rejected",
+        })
+        .eq("id", id);
+
+    if (error) {
+      setToast(error.message);
+      return;
+    }
+
+    setIncomingCall(null);
+
+    setToast(
+      "Call declined."
+    );
   }
 
   async function openFile(path: string) {
@@ -424,22 +687,10 @@ export default function App() {
     }
   }
 
-  function startCall(
-    video: boolean
-  ) {
-    if (!user) {
-      setToast(
-        "Sign in before calling."
-      );
-      return;
-    }
-
-    setCall({
-      room:
-        crypto.randomUUID(),
-      video,
-      initiator: true,
-    });
+  function closeCall() {
+    setCall(null);
+    setCallingMember(null);
+    setToast("Call ended.");
   }
 
   return (
@@ -526,28 +777,45 @@ export default function App() {
         </button>
 
         <button
-          onClick={() =>
-            startCall(false)
-          }
+          onClick={() => {
+            if (!user) {
+              setToast(
+                "Sign in before calling."
+              );
+              return;
+            }
+
+            setToast(
+              "Open Members and choose a member to call."
+            );
+
+            loadMembers();
+          }}
         >
           📞 Voice
         </button>
 
         <button
-          onClick={() =>
-            startCall(true)
-          }
+          onClick={() => {
+            if (!user) {
+              setToast(
+                "Sign in before calling."
+              );
+              return;
+            }
+
+            setToast(
+              "Open Members and choose a member to call."
+            );
+
+            loadMembers();
+          }}
         >
           🎥 Video
         </button>
 
         <button
-          onClick={() => {
-            setToast(
-              "Loading members..."
-            );
-            loadMembers();
-          }}
+          onClick={loadMembers}
         >
           👥 Members
         </button>
@@ -564,15 +832,125 @@ export default function App() {
         </div>
       )}
 
+      {incomingCall && (
+        <div className="incoming-call">
+          <h3>
+            {incomingCall.video
+              ? "🎥 Incoming video call"
+              : "📞 Incoming voice call"}
+          </h3>
+
+          <p>
+            <b>
+              {incomingCall.caller_name}
+            </b>{" "}
+            is calling you.
+          </p>
+
+          <div
+            style={{
+              display: "flex",
+              gap: "10px",
+              flexWrap: "wrap",
+            }}
+          >
+            <button
+              type="button"
+              onClick={acceptCall}
+            >
+              ✅ Accept
+            </button>
+
+            <button
+              type="button"
+              onClick={rejectCall}
+            >
+              ❌ Decline
+            </button>
+          </div>
+        </div>
+      )}
+
       {members.length > 0 && (
         <aside className="members">
-          {members.map((m) => (
-            <div key={m.id}>
-              🟢{" "}
-              {m.display_name ||
-                "Academic Hunters member"}
-            </div>
-          ))}
+          <h3>
+            Academic Hunters Members
+          </h3>
+
+          {members
+            .filter(
+              (m) =>
+                !user ||
+                m.id !== user.id
+            )
+            .map((m) => (
+              <div
+                key={m.id}
+                style={{
+                  padding:
+                    "10px",
+                  marginBottom:
+                    "8px",
+                  borderRadius:
+                    "10px",
+                  background:
+                    "rgba(255,255,255,.08)",
+                }}
+              >
+                <div>
+                  🟢{" "}
+                  {m.display_name ||
+                    "Academic Hunters member"}
+                </div>
+
+                <div
+                  style={{
+                    display:
+                      "flex",
+                    gap: "8px",
+                    marginTop:
+                      "8px",
+                    flexWrap:
+                      "wrap",
+                  }}
+                >
+                  <button
+                    type="button"
+                    disabled={
+                      callingMember ===
+                      m.id
+                    }
+                    onClick={() =>
+                      startMemberCall(
+                        m,
+                        false
+                      )
+                    }
+                  >
+                    {callingMember ===
+                    m.id
+                      ? "Calling..."
+                      : "📞 Voice"}
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={
+                      callingMember ===
+                      m.id
+                    }
+                    onClick={() =>
+                      startMemberCall(
+                        m,
+                        true
+                      )
+                    }
+                  >
+                    🎥 Video
+                  </button>
+                </div>
+              </div>
+            ))}
         </aside>
       )}
 
@@ -716,8 +1094,8 @@ export default function App() {
           initiator={
             call.initiator
           }
-          onClose={() =>
-            setCall(null)
+          onClose={
+            closeCall
           }
         />
       )}
