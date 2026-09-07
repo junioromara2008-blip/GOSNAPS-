@@ -25,6 +25,16 @@ type PrivateMessage = {
   content: string;
   created_at: string;
   read_at: string | null;
+  file_path?: string | null;
+  file_name?: string | null;
+};
+
+type Member = {
+  id: string;
+  display_name?: string | null;
+  avatar_path?: string | null;
+  created_at?: string;
+  avatar_url?: string | null;
 };
 
 export default function App() {
@@ -32,15 +42,22 @@ export default function App() {
 
   const [user, setUser] = useState<any>(null);
   const [email, setEmail] = useState("");
-  const [members, setMembers] = useState<any[]>([]);
+
+  const [members, setMembers] = useState<Member[]>([]);
   const [memberSearch, setMemberSearch] = useState("");
+
   const [messages, setMessages] = useState<any[]>([]);
   const [privateMessages, setPrivateMessages] =
     useState<PrivateMessage[]>([]);
+
   const [text, setText] = useState("");
   const [privateText, setPrivateText] = useState("");
+
   const [ai, setAi] = useState(false);
+
   const [file, setFile] = useState<File | null>(null);
+  const [privateFile, setPrivateFile] =
+    useState<File | null>(null);
 
   const [call, setCall] =
     useState<CallState | null>(null);
@@ -50,12 +67,16 @@ export default function App() {
 
   const [toast, setToast] = useState("");
   const [online, setOnline] = useState(0);
+
+  const [onlineUsers, setOnlineUsers] =
+    useState<Record<string, boolean>>({});
+
   const [sending, setSending] = useState(false);
   const [callingMember, setCallingMember] =
     useState<string | null>(null);
 
   const [selectedMember, setSelectedMember] =
-    useState<any | null>(null);
+    useState<Member | null>(null);
 
   const [conversationId, setConversationId] =
     useState<string | null>(null);
@@ -63,6 +84,21 @@ export default function App() {
   const [privateLoading, setPrivateLoading] =
     useState(false);
 
+  const [myProfile, setMyProfile] =
+    useState<Member | null>(null);
+
+  const [displayName, setDisplayName] =
+    useState("");
+
+  const [profileFile, setProfileFile] =
+    useState<File | null>(null);
+
+  const [savingProfile, setSavingProfile] =
+    useState(false);
+
+  /*
+   * AUTH
+   */
   useEffect(() => {
     let mounted = true;
 
@@ -79,6 +115,24 @@ export default function App() {
         }
       }
     );
+
+    return () => {
+      mounted = false;
+      auth.data.subscription.unsubscribe();
+    };
+  }, [sb]);
+
+  /*
+   * PUBLIC CHAT + PRESENCE + CALLS
+   */
+  useEffect(() => {
+    if (!user) {
+      setOnline(0);
+      setOnlineUsers({});
+      return;
+    }
+
+    let mounted = true;
 
     const msg = sb
       .channel("gosnaps-messages")
@@ -115,38 +169,72 @@ export default function App() {
         }
       });
 
+    /*
+     * REALTIME PRESENCE
+     */
     const presence = sb.channel(
       "gosnaps-presence",
       {
         config: {
           presence: {
-            key: Math.random().toString(36),
+            key: user.id,
           },
         },
       }
     );
 
+    const updatePresence = () => {
+      const state =
+        presence.presenceState();
+
+      const users: Record<
+        string,
+        boolean
+      > = {};
+
+      Object.keys(state).forEach(
+        (key) => {
+          users[key] = true;
+        }
+      );
+
+      setOnlineUsers(users);
+      setOnline(
+        Object.keys(users).length
+      );
+    };
+
     presence
       .on(
         "presence",
         { event: "sync" },
-        () => {
-          setOnline(
-            Object.keys(
-              presence.presenceState()
-            ).length
-          );
-        }
+        updatePresence
+      )
+      .on(
+        "presence",
+        { event: "join" },
+        updatePresence
+      )
+      .on(
+        "presence",
+        { event: "leave" },
+        updatePresence
       )
       .subscribe(async (status) => {
         if (status === "SUBSCRIBED") {
           await presence.track({
+            user_id: user.id,
             online_at:
               new Date().toISOString(),
           });
+
+          updatePresence();
         }
       });
 
+    /*
+     * CALL INVITATIONS
+     */
     const calls = sb
       .channel("gosnaps-call-invitations")
       .on(
@@ -159,17 +247,19 @@ export default function App() {
         async (payload) => {
           if (!mounted) return;
 
-          const invitation = payload.new as any;
+          const invitation =
+            payload.new as any;
 
           if (
-            !user ||
-            invitation.receiver_id !== user.id
+            invitation.receiver_id !==
+            user.id
           ) {
             return;
           }
 
           if (
-            invitation.status !== "ringing"
+            invitation.status !==
+            "ringing"
           ) {
             return;
           }
@@ -180,7 +270,9 @@ export default function App() {
           const { data: profile } =
             await sb
               .from("profiles")
-              .select("display_name")
+              .select(
+                "display_name"
+              )
               .eq(
                 "id",
                 invitation.caller_id
@@ -219,9 +311,7 @@ export default function App() {
           table: "call_invitations",
         },
         (payload) => {
-          if (!mounted || !user) {
-            return;
-          }
+          if (!mounted) return;
 
           const invitation =
             payload.new as any;
@@ -269,17 +359,78 @@ export default function App() {
     return () => {
       mounted = false;
 
-      auth.data.subscription.unsubscribe();
-
       sb.removeChannel(msg);
       sb.removeChannel(presence);
       sb.removeChannel(calls);
     };
   }, [sb, user]);
 
+  /*
+   * LOAD OWN PROFILE
+   */
+  useEffect(() => {
+    if (!user) {
+      setMyProfile(null);
+      setDisplayName("");
+      return;
+    }
+
+    loadMyProfile();
+  }, [user]);
+
+  async function loadMyProfile() {
+    if (!user) return;
+
+    const { data, error } =
+      await sb
+        .from("profiles")
+        .select(
+          "id,display_name,avatar_path,created_at"
+        )
+        .eq("id", user.id)
+        .maybeSingle();
+
+    if (error) {
+      return;
+    }
+
+    if (data) {
+      let avatarUrl = null;
+
+      if (data.avatar_path) {
+        const result =
+          await sb.storage
+            .from("gosnaps-avatars")
+            .createSignedUrl(
+              data.avatar_path,
+              3600
+            );
+
+        avatarUrl =
+          result.data?.signedUrl ||
+          null;
+      }
+
+      const profile = {
+        ...data,
+        avatar_url: avatarUrl,
+      };
+
+      setMyProfile(profile);
+      setDisplayName(
+        data.display_name || ""
+      );
+    }
+  }
+
+  /*
+   * LOGIN
+   */
   async function login() {
     if (!email.trim()) {
-      setToast("Enter your email.");
+      setToast(
+        "Enter your email."
+      );
       return;
     }
 
@@ -298,127 +449,151 @@ export default function App() {
     );
   }
 
-  async function loadMembers() {
-    setToast("Loading members...");
-
-    const { data, error } = await sb
-      .from("profiles")
-      .select(
-        "id,display_name,created_at"
-      )
-      .limit(100);
-
-    if (error) {
-      setToast(error.message);
-      return;
-    }
-
-    if (data) {
-      setMembers(data);
-      setToast(
-        `${data.length} member(s) found`
-      );
-    }
-  }
-
-  async function openPrivateChat(
-    member: any
-  ) {
+  /*
+   * PROFILE UPDATE
+   */
+  async function saveProfile() {
     if (!user) {
-      setToast("Sign in first.");
+      setToast(
+        "Sign in first."
+      );
       return;
     }
 
-    if (!member?.id) {
-      setToast("Member information is missing.");
-      return;
-    }
-
-    if (member.id === user.id) {
-      setToast("You cannot message yourself.");
-      return;
-    }
-
-    setPrivateLoading(true);
-    setToast("Opening private chat...");
+    setSavingProfile(true);
 
     try {
-      const ids = [user.id, member.id].sort();
+      let avatarPath =
+        myProfile?.avatar_path ||
+        null;
 
-      const stableConversationId =
-        await makeConversationId(
-          ids[0],
-          ids[1]
-        );
+      if (profileFile) {
+        const extension =
+          profileFile.name
+            .split(".")
+            .pop() ||
+          "jpg";
 
-      const conversationInsert =
+        const path =
+          `${user.id}/avatar-${Date.now()}.${extension}`;
+
+        const upload =
+          await sb.storage
+            .from(
+              "gosnaps-avatars"
+            )
+            .upload(
+              path,
+              profileFile,
+              {
+                upsert: true,
+              }
+            );
+
+        if (upload.error) {
+          setToast(
+            upload.error.message
+          );
+          return;
+        }
+
+        avatarPath = path;
+      }
+
+      const { error } =
         await sb
-          .from("conversations")
-          .insert({
-            id: stableConversationId,
+          .from("profiles")
+          .upsert({
+            id: user.id,
+            display_name:
+              displayName.trim() ||
+              "Academic Hunters member",
+            avatar_path:
+              avatarPath,
           });
 
-      if (
-        conversationInsert.error &&
-        !conversationInsert.error.message
-          .toLowerCase()
-          .includes("duplicate")
-      ) {
+      if (error) {
         setToast(
-          conversationInsert.error.message
+          error.message
         );
         return;
       }
 
-      const membersInsert =
-        await sb
-          .from("conversation_members")
-          .upsert(
-            [
-              {
-                conversation_id:
-                  stableConversationId,
-                user_id: user.id,
-              },
-              {
-                conversation_id:
-                  stableConversationId,
-                user_id: member.id,
-              },
-            ],
-            {
-              onConflict:
-                "conversation_id,user_id",
-            }
-          );
+      setProfileFile(null);
 
-      if (membersInsert.error) {
-        setToast(
-          membersInsert.error.message
-        );
-        return;
-      }
+      await loadMyProfile();
 
-      setSelectedMember(member);
-      setConversationId(
-        stableConversationId
-      );
-
-      await loadPrivateMessages(
-        stableConversationId
-      );
+      await loadMembers();
 
       setToast(
-        `Private chat with ${
-          member.display_name ||
-          "member"
-        } opened`
+        "Profile updated successfully."
       );
     } finally {
-      setPrivateLoading(false);
+      setSavingProfile(false);
     }
   }
 
+  /*
+   * MEMBERS
+   */
+  async function loadMembers() {
+    setToast(
+      "Loading members..."
+    );
+
+    const { data, error } =
+      await sb
+        .from("profiles")
+        .select(
+          "id,display_name,avatar_path,created_at"
+        )
+        .limit(100);
+
+    if (error) {
+      setToast(
+        error.message
+      );
+      return;
+    }
+
+    const enriched: Member[] =
+      [];
+
+    for (const member of data || []) {
+      let avatarUrl = null;
+
+      if (member.avatar_path) {
+        const result =
+          await sb.storage
+            .from(
+              "gosnaps-avatars"
+            )
+            .createSignedUrl(
+              member.avatar_path,
+              3600
+            );
+
+        avatarUrl =
+          result.data?.signedUrl ||
+          null;
+      }
+
+      enriched.push({
+        ...member,
+        avatar_url: avatarUrl,
+      });
+    }
+
+    setMembers(enriched);
+
+    setToast(
+      `${enriched.length} member(s) found`
+    );
+  }
+
+  /*
+   * STABLE CONVERSATION ID
+   */
   async function makeConversationId(
     first: string,
     second: string
@@ -426,11 +601,10 @@ export default function App() {
     const value =
       `academic-hunters:${first}:${second}`;
 
-    const encoder =
-      new TextEncoder();
-
     const bytes =
-      encoder.encode(value);
+      new TextEncoder().encode(
+        value
+      );
 
     const hash =
       await crypto.subtle.digest(
@@ -438,15 +612,14 @@ export default function App() {
         bytes
       );
 
-    const hashArray =
+    const hex =
       Array.from(
         new Uint8Array(hash)
-      );
-
-    const hex =
-      hashArray
+      )
         .map((b) =>
-          b.toString(16).padStart(2, "0")
+          b
+            .toString(16)
+            .padStart(2, "0")
         )
         .join("");
 
@@ -459,6 +632,133 @@ export default function App() {
     ].join("-");
   }
 
+  /*
+   * OPEN PRIVATE CHAT
+   */
+  async function openPrivateChat(
+    member: Member
+  ) {
+    if (!user) {
+      setToast(
+        "Sign in first."
+      );
+      return;
+    }
+
+    if (
+      !member?.id ||
+      member.id === user.id
+    ) {
+      setToast(
+        "Invalid member."
+      );
+      return;
+    }
+
+    setPrivateLoading(true);
+
+    try {
+      const ids =
+        [user.id, member.id].sort();
+
+      const id =
+        await makeConversationId(
+          ids[0],
+          ids[1]
+        );
+
+      /*
+       * Create conversation.
+       * Duplicate is okay because
+       * the conversation already exists.
+       */
+      const conversation =
+        await sb
+          .from("conversations")
+          .insert({
+            id,
+          });
+
+      if (
+        conversation.error &&
+        !conversation.error.message
+          .toLowerCase()
+          .includes("duplicate")
+      ) {
+        setToast(
+          conversation.error.message
+        );
+        return;
+      }
+
+      /*
+       * Insert members separately.
+       * This avoids the UPDATE/RLS problem
+       * caused by upsert.
+       */
+      const firstMember =
+        await sb
+          .from(
+            "conversation_members"
+          )
+          .insert({
+            conversation_id: id,
+            user_id: user.id,
+          });
+
+      if (
+        firstMember.error &&
+        !firstMember.error.message
+          .toLowerCase()
+          .includes("duplicate")
+      ) {
+        setToast(
+          firstMember.error.message
+        );
+        return;
+      }
+
+      const secondMember =
+        await sb
+          .from(
+            "conversation_members"
+          )
+          .insert({
+            conversation_id: id,
+            user_id: member.id,
+          });
+
+      if (
+        secondMember.error &&
+        !secondMember.error.message
+          .toLowerCase()
+          .includes("duplicate")
+      ) {
+        setToast(
+          secondMember.error.message
+        );
+        return;
+      }
+
+      setSelectedMember(member);
+      setConversationId(id);
+
+      await loadPrivateMessages(id);
+
+      setToast(
+        `Private chat with ${
+          member.display_name ||
+          "member"
+        } opened`
+      );
+    } finally {
+      setPrivateLoading(false);
+    }
+  }
+
+  /*
+   * LOAD PRIVATE MESSAGES
+   */
   async function loadPrivateMessages(
     id: string
   ) {
@@ -468,7 +768,7 @@ export default function App() {
       await sb
         .from("private_messages")
         .select(
-          "id,conversation_id,sender_id,content,created_at,read_at"
+          "id,conversation_id,sender_id,content,created_at,read_at,file_path,file_name"
         )
         .eq(
           "conversation_id",
@@ -480,7 +780,9 @@ export default function App() {
         .limit(200);
 
     if (error) {
-      setToast(error.message);
+      setToast(
+        error.message
+      );
       setPrivateLoading(false);
       return;
     }
@@ -491,6 +793,9 @@ export default function App() {
 
     setPrivateLoading(false);
 
+    /*
+     * Mark incoming messages as read.
+     */
     if (user) {
       await sb
         .from("private_messages")
@@ -506,54 +811,401 @@ export default function App() {
           "sender_id",
           user.id
         )
-        .is("read_at", null);
+        .is(
+          "read_at",
+          null
+        );
     }
   }
 
+  /*
+   * PRIVATE REALTIME
+   */
+  useEffect(() => {
+    if (
+      !user ||
+      !conversationId
+    ) {
+      return;
+    }
+
+    const channel =
+      sb
+        .channel(
+          `private-chat:${conversationId}`
+        )
+        .on(
+          "postgres_changes",
+          {
+            event: "INSERT",
+            schema: "public",
+            table:
+              "private_messages",
+            filter:
+              `conversation_id=eq.${conversationId}`,
+          },
+          async (payload) => {
+            const incoming =
+              payload.new as PrivateMessage;
+
+            setPrivateMessages(
+              (old) => {
+                if (
+                  old.some(
+                    (m) =>
+                      m.id ===
+                      incoming.id
+                  )
+                ) {
+                  return old;
+                }
+
+                return [
+                  ...old,
+                  incoming,
+                ];
+              }
+            );
+
+            /*
+             * Automatically mark incoming
+             * messages read while this chat
+             * is open.
+             */
+            if (
+              incoming.sender_id !==
+                user.id &&
+              !incoming.read_at
+            ) {
+              await sb
+                .from(
+                  "private_messages"
+                )
+                .update({
+                  read_at:
+                    new Date().toISOString(),
+                })
+                .eq(
+                  "id",
+                  incoming.id
+                );
+            }
+
+            if (
+              incoming.sender_id !==
+              user.id
+            ) {
+              setToast(
+                "New private message"
+              );
+            }
+          }
+        )
+        .on(
+          "postgres_changes",
+          {
+            event: "UPDATE",
+            schema: "public",
+            table:
+              "private_messages",
+            filter:
+              `conversation_id=eq.${conversationId}`,
+          },
+          (payload) => {
+            const updated =
+              payload.new as PrivateMessage;
+
+            setPrivateMessages(
+              (old) =>
+                old.map((m) =>
+                  m.id ===
+                  updated.id
+                    ? updated
+                    : m
+                )
+            );
+          }
+        )
+        .on(
+          "postgres_changes",
+          {
+            event: "DELETE",
+            schema: "public",
+            table:
+              "private_messages",
+            filter:
+              `conversation_id=eq.${conversationId}`,
+          },
+          (payload) => {
+            const deleted =
+              payload.old as PrivateMessage;
+
+            setPrivateMessages(
+              (old) =>
+                old.filter(
+                  (m) =>
+                    m.id !==
+                    deleted.id
+                )
+            );
+          }
+        )
+        .subscribe();
+
+    return () => {
+      sb.removeChannel(
+        channel
+      );
+    };
+  }, [
+    sb,
+    user,
+    conversationId,
+  ]);
+
+  /*
+   * SEND PRIVATE MESSAGE
+   */
   async function sendPrivateMessage() {
     if (!user) {
-      setToast("Sign in first.");
+      setToast(
+        "Sign in first."
+      );
       return;
     }
 
     if (!conversationId) {
-      setToast("Open a private chat first.");
+      setToast(
+        "Open a private chat first."
+      );
       return;
     }
 
     const value =
       privateText.trim();
 
-    if (!value) {
+    if (
+      !value &&
+      !privateFile
+    ) {
       return;
     }
 
     setSending(true);
 
+    try {
+      let filePath =
+        null;
+
+      let fileName =
+        null;
+
+      if (privateFile) {
+        const safeName =
+          privateFile.name.replace(
+            /[^a-zA-Z0-9._-]/g,
+            "_"
+          );
+
+        filePath =
+          `${conversationId}/${user.id}/${Date.now()}-${safeName}`;
+
+        const upload =
+          await sb.storage
+            .from(
+              "gosnaps-private-files"
+            )
+            .upload(
+              filePath,
+              privateFile
+            );
+
+        if (upload.error) {
+          setToast(
+            upload.error.message
+          );
+          return;
+        }
+
+        fileName =
+          privateFile.name;
+      }
+
+      const { error } =
+        await sb
+          .from(
+            "private_messages"
+          )
+          .insert({
+            conversation_id:
+              conversationId,
+            sender_id:
+              user.id,
+            content:
+              value ||
+              "📎 File",
+            file_path:
+              filePath,
+            file_name:
+              fileName,
+          });
+
+      if (error) {
+        setToast(
+          error.message
+        );
+        return;
+      }
+
+      setPrivateText("");
+      setPrivateFile(null);
+
+      setToast(
+        "Private message sent."
+      );
+    } finally {
+      setSending(false);
+    }
+  }
+
+  /*
+   * DELETE PRIVATE MESSAGE
+   */
+  async function deletePrivateMessage(
+    id: string,
+    filePath?: string | null
+  ) {
+    if (!user) return;
+
     const { error } =
       await sb
         .from("private_messages")
-        .insert({
-          conversation_id:
-            conversationId,
-          sender_id:
-            user.id,
-          content:
-            value,
-        });
+        .delete()
+        .eq("id", id)
+        .eq(
+          "sender_id",
+          user.id
+        );
 
     if (error) {
-      setToast(error.message);
-      setSending(false);
+      setToast(
+        error.message
+      );
       return;
     }
 
-    setPrivateText("");
-    setSending(false);
+    if (filePath) {
+      await sb.storage
+        .from(
+          "gosnaps-private-files"
+        )
+        .remove([
+          filePath,
+        ]);
+    }
+
+    setToast(
+      "Message deleted."
+    );
   }
 
+  /*
+   * PRIVATE FILE OPEN
+   */
+  async function openPrivateFile(
+    path: string
+  ) {
+    if (!user) return;
+
+    const { data, error } =
+      await sb.storage
+        .from(
+          "gosnaps-private-files"
+        )
+        .createSignedUrl(
+          path,
+          3600
+        );
+
+    if (
+      error ||
+      !data?.signedUrl
+    ) {
+      setToast(
+        error?.message ||
+          "Could not open file."
+      );
+      return;
+    }
+
+    window.open(
+      data.signedUrl,
+      "_blank",
+      "noopener,noreferrer"
+    );
+  }
+
+  /*
+   * PRIVATE FILE DOWNLOAD
+   */
+  async function downloadPrivateFile(
+    path: string,
+    name: string
+  ) {
+    if (!user) return;
+
+    const { data, error } =
+      await sb.storage
+        .from(
+          "gosnaps-private-files"
+        )
+        .createSignedUrl(
+          path,
+          3600,
+          {
+            download:
+              name ||
+              true,
+          }
+        );
+
+    if (
+      error ||
+      !data?.signedUrl
+    ) {
+      setToast(
+        error?.message ||
+          "Could not download file."
+      );
+      return;
+    }
+
+    const link =
+      document.createElement(
+        "a"
+      );
+
+    link.href =
+      data.signedUrl;
+
+    link.download =
+      name ||
+      "Academic-Hunters-file";
+
+    document.body.appendChild(
+      link
+    );
+
+    link.click();
+
+    link.remove();
+  }
+
+  /*
+   * CALLING
+   */
   async function startMemberCall(
-    member: any,
+    member: Member,
     video: boolean
   ) {
     if (!user) {
@@ -563,16 +1215,12 @@ export default function App() {
       return;
     }
 
-    if (!member?.id) {
+    if (
+      !member?.id ||
+      member.id === user.id
+    ) {
       setToast(
-        "Member information is missing."
-      );
-      return;
-    }
-
-    if (member.id === user.id) {
-      setToast(
-        "You cannot call yourself."
+        "Invalid member."
       );
       return;
     }
@@ -584,25 +1232,35 @@ export default function App() {
       return;
     }
 
-    setCallingMember(member.id);
+    setCallingMember(
+      member.id
+    );
 
     const room =
       crypto.randomUUID();
 
     const { error } =
       await sb
-        .from("call_invitations")
+        .from(
+          "call_invitations"
+        )
         .insert({
-          caller_id: user.id,
-          receiver_id: member.id,
-          room_id: room,
+          caller_id:
+            user.id,
+          receiver_id:
+            member.id,
+          room_id:
+            room,
           video,
-          status: "ringing",
+          status:
+            "ringing",
         });
 
     if (error) {
       setCallingMember(null);
-      setToast(error.message);
+      setToast(
+        error.message
+      );
       return;
     }
 
@@ -615,18 +1273,20 @@ export default function App() {
   }
 
   async function acceptCall() {
-    if (!incomingCall) {
+    if (!incomingCall)
       return;
-    }
 
     const accepted =
       incomingCall;
 
     const { error } =
       await sb
-        .from("call_invitations")
+        .from(
+          "call_invitations"
+        )
         .update({
-          status: "accepted",
+          status:
+            "accepted",
         })
         .eq(
           "id",
@@ -634,7 +1294,9 @@ export default function App() {
         );
 
     if (error) {
-      setToast(error.message);
+      setToast(
+        error.message
+      );
       return;
     }
 
@@ -654,23 +1316,27 @@ export default function App() {
   }
 
   async function rejectCall() {
-    if (!incomingCall) {
+    if (!incomingCall)
       return;
-    }
-
-    const id =
-      incomingCall.id;
 
     const { error } =
       await sb
-        .from("call_invitations")
+        .from(
+          "call_invitations"
+        )
         .update({
-          status: "rejected",
+          status:
+            "rejected",
         })
-        .eq("id", id);
+        .eq(
+          "id",
+          incomingCall.id
+        );
 
     if (error) {
-      setToast(error.message);
+      setToast(
+        error.message
+      );
       return;
     }
 
@@ -681,24 +1347,18 @@ export default function App() {
     );
   }
 
+  /*
+   * PUBLIC FILE OPEN
+   */
   async function openFile(
     path: string
   ) {
     if (!user) {
-      setToast("Sign in first.");
-      return;
-    }
-
-    if (!path) {
       setToast(
-        "File path is missing."
+        "Sign in first."
       );
       return;
     }
-
-    setToast(
-      "Preparing file..."
-    );
 
     const { data, error } =
       await sb.storage
@@ -716,7 +1376,7 @@ export default function App() {
     ) {
       setToast(
         error?.message ||
-          "Could not open this file."
+          "Could not open file."
       );
       return;
     }
@@ -726,31 +1386,16 @@ export default function App() {
       "_blank",
       "noopener,noreferrer"
     );
-
-    setToast(
-      "File opened."
-    );
   }
 
+  /*
+   * PUBLIC FILE DOWNLOAD
+   */
   async function downloadFile(
     path: string,
     name: string
   ) {
-    if (!user) {
-      setToast("Sign in first.");
-      return;
-    }
-
-    if (!path) {
-      setToast(
-        "File path is missing."
-      );
-      return;
-    }
-
-    setToast(
-      "Preparing download..."
-    );
+    if (!user) return;
 
     const { data, error } =
       await sb.storage
@@ -762,7 +1407,8 @@ export default function App() {
           3600,
           {
             download:
-              name || true,
+              name ||
+              true,
           }
         );
 
@@ -772,7 +1418,7 @@ export default function App() {
     ) {
       setToast(
         error?.message ||
-          "Could not download this file."
+          "Could not download file."
       );
       return;
     }
@@ -789,9 +1435,6 @@ export default function App() {
       name ||
       "Academic-Hunters-file";
 
-    link.target =
-      "_blank";
-
     document.body.appendChild(
       link
     );
@@ -799,12 +1442,11 @@ export default function App() {
     link.click();
 
     link.remove();
-
-    setToast(
-      "Download started."
-    );
   }
 
+  /*
+   * PUBLIC / AI SEND
+   */
   async function send() {
     if (sending) return;
 
@@ -818,7 +1460,7 @@ export default function App() {
       setText("");
 
       try {
-        const r =
+        const response =
           await fetch(
             "/api/chat",
             {
@@ -827,25 +1469,27 @@ export default function App() {
                 "Content-Type":
                   "application/json",
               },
-              body: JSON.stringify({
-                message: q,
-              }),
+              body:
+                JSON.stringify({
+                  message: q,
+                }),
             }
           );
 
-        const d =
-          await r.json();
+        const data =
+          await response.json();
 
         setMessages(
           (old) => [
             ...old,
             {
-              id: Date.now(),
+              id:
+                Date.now(),
               sender:
                 "Academic Hunters AI",
               text:
-                d.reply ||
-                d.error ||
+                data.reply ||
+                data.error ||
                 "AI could not respond.",
               created_at:
                 new Date().toISOString(),
@@ -886,17 +1530,21 @@ export default function App() {
     setSending(true);
 
     try {
-      let attachmentPath:
-        | string
-        | null = null;
+      let attachmentPath =
+        null;
 
-      let attachmentName:
-        | string
-        | null = null;
+      let attachmentName =
+        null;
 
       if (file) {
+        const safeName =
+          file.name.replace(
+            /[^a-zA-Z0-9._-]/g,
+            "_"
+          );
+
         const path =
-          `${user.id}/${Date.now()}-${file.name}`;
+          `${user.id}/${Date.now()}-${safeName}`;
 
         const upload =
           await sb.storage
@@ -922,46 +1570,36 @@ export default function App() {
           file.name;
       }
 
-      const message = {
-        sender_id:
-          user.id,
-
-        receiver_id:
-          null,
-
-        sender:
-          user.email ||
-          "Academic Hunters Member",
-
-        content:
-          messageText ||
-          "📎 File",
-
-        text:
-          messageText ||
-          "📎 File",
-
-        file_url:
-          attachmentPath,
-
-        attachment:
-          attachmentPath
-            ? {
-                path:
-                  attachmentPath,
-                name:
-                  attachmentName ||
-                  "File",
-              }
-            : null,
-      };
-
       const result =
         await sb
           .from("messages")
-          .insert(
-            message
-          );
+          .insert({
+            sender_id:
+              user.id,
+            receiver_id:
+              null,
+            sender:
+              user.email ||
+              "Academic Hunters Member",
+            content:
+              messageText ||
+              "📎 File",
+            text:
+              messageText ||
+              "📎 File",
+            file_url:
+              attachmentPath,
+            attachment:
+              attachmentPath
+                ? {
+                    path:
+                      attachmentPath,
+                    name:
+                      attachmentName ||
+                      "File",
+                  }
+                : null,
+          });
 
       if (result.error) {
         setToast(
@@ -970,13 +1608,11 @@ export default function App() {
         return;
       }
 
-      setToast("Sent");
       setText("");
       setFile(null);
-    } catch (error: any) {
+
       setToast(
-        error?.message ||
-          "Something went wrong."
+        "Message sent."
       );
     } finally {
       setSending(false);
@@ -988,6 +1624,7 @@ export default function App() {
     setConversationId(null);
     setPrivateMessages([]);
     setPrivateText("");
+    setPrivateFile(null);
   }
 
   function closeCall() {
@@ -999,24 +1636,33 @@ export default function App() {
   }
 
   const filteredMembers =
-    members.filter((m) => {
-      if (!user || m.id === user.id) {
-        return false;
+    members.filter(
+      (m) => {
+        if (
+          !user ||
+          m.id === user.id
+        ) {
+          return false;
+        }
+
+        const name =
+          (
+            m.display_name ||
+            "Academic Hunters member"
+          ).toLowerCase();
+
+        return name.includes(
+          memberSearch
+            .trim()
+            .toLowerCase()
+        );
       }
-
-      const name =
-        (
-          m.display_name ||
-          "Academic Hunters member"
-        ).toLowerCase();
-
-      return name.includes(
-        memberSearch.trim().toLowerCase()
-      );
-    });
+    );
 
   return (
     <main className="wrap">
+
+      {/* HEADER */}
       <header>
         <div className="logo">
           ACADEMIC{" "}
@@ -1030,6 +1676,7 @@ export default function App() {
         </div>
       </header>
 
+      {/* HERO */}
       <section className="hero">
         <small>
           CONNECT • CHAT • CALL • CREATE
@@ -1041,11 +1688,13 @@ export default function App() {
 
         <p>
           Real-time conversations,
-          AI, files and browser
+          AI, private messaging,
+          files and browser
           voice/video calling.
         </p>
       </section>
 
+      {/* LOGIN */}
       {!user ? (
         <section className="login">
           <input
@@ -1075,6 +1724,151 @@ export default function App() {
         </div>
       )}
 
+      {/* PROFILE */}
+      {user && (
+        <section
+          style={{
+            marginTop:
+              "15px",
+            padding:
+              "14px",
+            borderRadius:
+              "14px",
+            background:
+              "rgba(255,255,255,.08)",
+          }}
+        >
+          <h3>
+            👤 My Profile
+          </h3>
+
+          <div
+            style={{
+              display:
+                "flex",
+              gap:
+                "12px",
+              alignItems:
+                "center",
+              flexWrap:
+                "wrap",
+              marginTop:
+                "10px",
+            }}
+          >
+            {myProfile?.avatar_url ? (
+              <img
+                src={
+                  myProfile.avatar_url
+                }
+                alt="Profile"
+                style={{
+                  width:
+                    "58px",
+                  height:
+                    "58px",
+                  borderRadius:
+                    "50%",
+                  objectFit:
+                    "cover",
+                }}
+              />
+            ) : (
+              <div
+                style={{
+                  width:
+                    "58px",
+                  height:
+                    "58px",
+                  borderRadius:
+                    "50%",
+                  display:
+                    "flex",
+                  alignItems:
+                    "center",
+                  justifyContent:
+                    "center",
+                  background:
+                    "rgba(255,255,255,.15)",
+                  fontSize:
+                    "25px",
+                }}
+              >
+                👤
+              </div>
+            )}
+
+            <div
+              style={{
+                flex: 1,
+                minWidth:
+                  "180px",
+              }}
+            >
+              <input
+                value={
+                  displayName
+                }
+                onChange={(
+                  e
+                ) =>
+                  setDisplayName(
+                    e.target
+                      .value
+                  )
+                }
+                placeholder="Your display name"
+                style={{
+                  width:
+                    "100%",
+                  boxSizing:
+                    "border-box",
+                  padding:
+                    "10px",
+                  borderRadius:
+                    "9px",
+                  border:
+                    "1px solid rgba(255,255,255,.2)",
+                }}
+              />
+
+              <input
+                type="file"
+                accept="image/*"
+                onChange={(
+                  e
+                ) =>
+                  setProfileFile(
+                    e.target
+                      .files?.[0] ||
+                      null
+                  )
+                }
+                style={{
+                  marginTop:
+                    "8px",
+                }}
+              />
+            </div>
+
+            <button
+              type="button"
+              onClick={
+                saveProfile
+              }
+              disabled={
+                savingProfile
+              }
+            >
+              {savingProfile
+                ? "Saving..."
+                : "Save Profile"}
+            </button>
+          </div>
+        </section>
+      )}
+
+      {/* NAVIGATION */}
       <nav>
         <button
           className={
@@ -1112,6 +1906,7 @@ export default function App() {
             }
 
             loadMembers();
+
             setToast(
               "Choose a member to call."
             );
@@ -1130,6 +1925,7 @@ export default function App() {
             }
 
             loadMembers();
+
             setToast(
               "Choose a member to call."
             );
@@ -1147,6 +1943,7 @@ export default function App() {
         </button>
       </nav>
 
+      {/* TOAST */}
       {toast && (
         <div
           className="toast"
@@ -1158,6 +1955,7 @@ export default function App() {
         </div>
       )}
 
+      {/* INCOMING CALL */}
       {incomingCall && (
         <div className="incoming-call">
           <h3>
@@ -1179,7 +1977,8 @@ export default function App() {
             style={{
               display:
                 "flex",
-              gap: "10px",
+              gap:
+                "10px",
               flexWrap:
                 "wrap",
             }}
@@ -1205,37 +2004,53 @@ export default function App() {
         </div>
       )}
 
+      {/* MEMBERS */}
       {members.length > 0 && (
         <aside className="members">
           <h3>
-            Academic Hunters Members
+            👥 Academic Hunters Members
           </h3>
 
           <input
             type="search"
-            value={memberSearch}
-            onChange={(e) =>
+            value={
+              memberSearch
+            }
+            onChange={(
+              e
+            ) =>
               setMemberSearch(
-                e.target.value
+                e.target
+                  .value
               )
             }
             placeholder="🔎 Search members..."
             style={{
-              width: "100%",
-              padding: "11px 13px",
-              borderRadius: "10px",
-              border: "1px solid rgba(255,255,255,.18)",
-              outline: "none",
-              marginBottom: "12px",
-              boxSizing: "border-box",
+              width:
+                "100%",
+              padding:
+                "11px 13px",
+              borderRadius:
+                "10px",
+              border:
+                "1px solid rgba(255,255,255,.18)",
+              outline:
+                "none",
+              marginBottom:
+                "12px",
+              boxSizing:
+                "border-box",
             }}
           />
 
-          {filteredMembers.length === 0 ? (
+          {filteredMembers.length ===
+          0 ? (
             <div
               style={{
-                padding: "14px",
-                borderRadius: "12px",
+                padding:
+                  "14px",
+                borderRadius:
+                  "12px",
                 background:
                   "rgba(255,255,255,.08)",
               }}
@@ -1245,93 +2060,158 @@ export default function App() {
                 : "No other members available."}
             </div>
           ) : (
-            filteredMembers.map((m) => (
-              <div
-                key={m.id}
-                style={{
-                  padding:
-                    "12px",
-                  marginBottom:
-                    "10px",
-                  borderRadius:
-                    "12px",
-                  background:
-                    "rgba(255,255,255,.08)",
-                }}
-              >
-                <div>
-                  🟢{" "}
-                  {m.display_name ||
-                    "Academic Hunters member"}
-                </div>
-
+            filteredMembers.map(
+              (m) => (
                 <div
+                  key={
+                    m.id
+                  }
                   style={{
-                    display:
-                      "flex",
-                    gap:
-                      "8px",
-                    marginTop:
-                      "9px",
-                    flexWrap:
-                      "wrap",
+                    padding:
+                      "12px",
+                    marginBottom:
+                      "10px",
+                    borderRadius:
+                      "12px",
+                    background:
+                      "rgba(255,255,255,.08)",
                   }}
                 >
-                  <button
-                    type="button"
-                    disabled={
-                      privateLoading
-                    }
-                    onClick={() =>
-                      openPrivateChat(
-                        m
-                      )
-                    }
+                  <div
+                    style={{
+                      display:
+                        "flex",
+                      gap:
+                        "10px",
+                      alignItems:
+                        "center",
+                    }}
                   >
-                    💬 Chat
-                  </button>
+                    {m.avatar_url ? (
+                      <img
+                        src={
+                          m.avatar_url
+                        }
+                        alt=""
+                        style={{
+                          width:
+                            "42px",
+                          height:
+                            "42px",
+                          borderRadius:
+                            "50%",
+                          objectFit:
+                            "cover",
+                        }}
+                      />
+                    ) : (
+                      <div>
+                        👤
+                      </div>
+                    )}
 
-                  <button
-                    type="button"
-                    disabled={
-                      callingMember ===
-                      m.id
-                    }
-                    onClick={() =>
-                      startMemberCall(
-                        m,
-                        false
-                      )
-                    }
-                  >
-                    {callingMember ===
-                    m.id
-                      ? "Calling..."
-                      : "📞 Voice"}
-                  </button>
+                    <div>
+                      <div>
+                        <span
+                          style={{
+                            color:
+                              onlineUsers[
+                                m.id
+                              ]
+                                ? "#31d158"
+                                : "#999",
+                          }}
+                        >
+                          ●
+                        </span>{" "}
+                        {m.display_name ||
+                          "Academic Hunters member"}
+                      </div>
 
-                  <button
-                    type="button"
-                    disabled={
-                      callingMember ===
-                      m.id
-                    }
-                    onClick={() =>
-                      startMemberCall(
-                        m,
-                        true
-                      )
-                    }
+                      <small
+                        style={{
+                          opacity:
+                            0.7,
+                        }}
+                      >
+                        {onlineUsers[
+                          m.id
+                        ]
+                          ? "Online"
+                          : "Offline"}
+                      </small>
+                    </div>
+                  </div>
+
+                  <div
+                    style={{
+                      display:
+                        "flex",
+                      gap:
+                        "8px",
+                      marginTop:
+                        "9px",
+                      flexWrap:
+                        "wrap",
+                    }}
                   >
-                    🎥 Video
-                  </button>
+                    <button
+                      type="button"
+                      disabled={
+                        privateLoading
+                      }
+                      onClick={() =>
+                        openPrivateChat(
+                          m
+                        )
+                      }
+                    >
+                      💬 Chat
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={
+                        callingMember ===
+                        m.id
+                      }
+                      onClick={() =>
+                        startMemberCall(
+                          m,
+                          false
+                        )
+                      }
+                    >
+                      {callingMember ===
+                      m.id
+                        ? "Calling..."
+                        : "📞 Voice"}
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={
+                        callingMember ===
+                        m.id
+                      }
+                      onClick={() =>
+                        startMemberCall(
+                          m,
+                          true
+                        )
+                      }
+                    >
+                      🎥 Video
+                    </button>
+                  </div>
                 </div>
-              </div>
-            ))
+              )
+            )
           )}
         </aside>
       )}
 
+      {/* PRIVATE CHAT */}
       {selectedMember &&
         conversationId && (
           <section
@@ -1355,17 +2235,46 @@ export default function App() {
                   "space-between",
                 alignItems:
                   "center",
-                gap: "10px",
+                gap:
+                  "10px",
                 marginBottom:
                   "12px",
               }}
             >
               <div>
                 <b>
-                  💬 Private chat
+                  💬 Private Chat
                 </b>
 
-                <div>
+                <div
+                  style={{
+                    marginTop:
+                      "4px",
+                  }}
+                >
+                  {selectedMember.avatar_url && (
+                    <img
+                      src={
+                        selectedMember.avatar_url
+                      }
+                      alt=""
+                      style={{
+                        width:
+                          "30px",
+                        height:
+                          "30px",
+                        borderRadius:
+                          "50%",
+                        objectFit:
+                          "cover",
+                        verticalAlign:
+                          "middle",
+                        marginRight:
+                          "7px",
+                      }}
+                    />
+                  )}
+
                   {
                     selectedMember.display_name ||
                     "Academic Hunters member"
@@ -1386,7 +2295,7 @@ export default function App() {
             <div
               style={{
                 maxHeight:
-                  "320px",
+                  "350px",
                 overflowY:
                   "auto",
                 padding:
@@ -1412,7 +2321,7 @@ export default function App() {
                       }
                       style={{
                         padding:
-                          "9px 11px",
+                          "10px 11px",
                         marginBottom:
                           "8px",
                         borderRadius:
@@ -1424,28 +2333,111 @@ export default function App() {
                             : "rgba(255,255,255,.10)",
                       }}
                     >
-                      <b>
-                        {m.sender_id ===
-                        user?.id
-                          ? "You"
-                          : selectedMember.display_name ||
-                            "Member"}
-                      </b>
+                      <div
+                        style={{
+                          display:
+                            "flex",
+                          justifyContent:
+                            "space-between",
+                          gap:
+                            "8px",
+                        }}
+                      >
+                        <b>
+                          {m.sender_id ===
+                          user?.id
+                            ? "You"
+                            : selectedMember.display_name ||
+                              "Member"}
+                        </b>
 
-                      <p>
+                        {m.sender_id ===
+                          user?.id && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              deletePrivateMessage(
+                                m.id,
+                                m.file_path
+                              )
+                            }
+                            style={{
+                              fontSize:
+                                "11px",
+                            }}
+                          >
+                            🗑️
+                          </button>
+                        )}
+                      </div>
+
+                      <p
+                        style={{
+                          whiteSpace:
+                            "pre-wrap",
+                        }}
+                      >
                         {
                           m.content
                         }
                       </p>
 
-                      <small>
+                      {m.file_path && (
+                        <div
+                          style={{
+                            display:
+                              "flex",
+                            gap:
+                              "7px",
+                            flexWrap:
+                              "wrap",
+                            marginTop:
+                              "7px",
+                          }}
+                        >
+                          <button
+                            type="button"
+                            onClick={() =>
+                              openPrivateFile(
+                                m.file_path!
+                              )
+                            }
+                          >
+                            📂 Open{" "}
+                            {
+                              m.file_name
+                            }
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() =>
+                              downloadPrivateFile(
+                                m.file_path!,
+                                m.file_name ||
+                                  "file"
+                              )
+                            }
+                          >
+                            ⬇️ Download
+                          </button>
+                        </div>
+                      )}
+
+                      <small
+                        style={{
+                          opacity:
+                            0.7,
+                        }}
+                      >
                         {new Date(
                           m.created_at
                         ).toLocaleString()}
+
                         {m.sender_id ===
                           user?.id &&
                           m.read_at
-                          ? " • ✓ Read"
+                          ? " • ✓✓ Read"
                           : ""}
                       </small>
                     </article>
@@ -1453,6 +2445,42 @@ export default function App() {
                 )
               )}
             </div>
+
+            {/* PRIVATE FILE */}
+            {privateFile && (
+              <div
+                style={{
+                  marginTop:
+                    "8px",
+                  padding:
+                    "8px",
+                  borderRadius:
+                    "8px",
+                  background:
+                    "rgba(255,255,255,.08)",
+                }}
+              >
+                📎{" "}
+                {
+                  privateFile.name
+                }
+
+                <button
+                  type="button"
+                  onClick={() =>
+                    setPrivateFile(
+                      null
+                    )
+                  }
+                  style={{
+                    marginLeft:
+                      "8px",
+                  }}
+                >
+                  ✕
+                </button>
+              </div>
+            )}
 
             <div
               style={{
@@ -1462,8 +2490,30 @@ export default function App() {
                   "8px",
                 marginTop:
                   "10px",
+                alignItems:
+                  "center",
               }}
             >
+              <label>
+                📎
+                <input
+                  type="file"
+                  style={{
+                    display:
+                      "none",
+                  }}
+                  onChange={(
+                    e
+                  ) =>
+                    setPrivateFile(
+                      e.target
+                        .files?.[0] ||
+                      null
+                    )
+                  }
+                />
+              </label>
+
               <input
                 value={
                   privateText
@@ -1482,14 +2532,17 @@ export default function App() {
                   if (
                     e.key ===
                       "Enter" &&
+                    !e.shiftKey &&
                     !sending
                   ) {
+                    e.preventDefault();
                     sendPrivateMessage();
                   }
                 }}
                 placeholder="Write a private message..."
                 style={{
-                  flex: 1,
+                  flex:
+                    1,
                 }}
               />
 
@@ -1510,6 +2563,7 @@ export default function App() {
           </section>
         )}
 
+      {/* PUBLIC CHAT */}
       <section className="chat">
         {messages.map(
           (m, i) => {
@@ -1591,12 +2645,26 @@ export default function App() {
                     </button>
                   </div>
                 )}
+
+                {m.created_at && (
+                  <small
+                    style={{
+                      opacity:
+                        0.6,
+                    }}
+                  >
+                    {new Date(
+                      m.created_at
+                    ).toLocaleString()}
+                  </small>
+                )}
               </article>
             );
           }
         )}
       </section>
 
+      {/* PUBLIC COMPOSER */}
       <div className="composer">
         <label>
           📎
@@ -1648,6 +2716,7 @@ export default function App() {
         </button>
       </div>
 
+      {/* CALL */}
       {call && (
         <Call
           room={
